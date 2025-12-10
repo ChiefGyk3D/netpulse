@@ -1,0 +1,16 @@
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    jsonData:
+      version: Flux
+      organization: netpulse
+      defaultBucket: netpulse
+      tlsSkipVerify: true
+    secureJsonData:
+      token: netpulse-token-change-me
+    isDefault: true
+    editable: true

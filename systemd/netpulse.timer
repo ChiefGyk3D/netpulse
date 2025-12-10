@@ -1,0 +1,13 @@
+[Unit]
+Description=Run NetPulse Speedtest every 30 minutes
+Documentation=https://github.com/chiefgyk3d/netpulse
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

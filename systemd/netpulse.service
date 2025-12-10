@@ -1,0 +1,40 @@
+[Unit]
+Description=NetPulse Speedtest Runner
+Documentation=https://github.com/chiefgyk3d/netpulse
+After=network-online.target influxdb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=netpulse
+Group=netpulse
+WorkingDirectory=/opt/netpulse
+ExecStart=/opt/netpulse/venv/bin/python /opt/netpulse/speedtest_runner.py --once
+Environment="INFLUXDB_URL=http://localhost:8086"
+Environment="INFLUXDB_TOKEN=netpulse-token-change-me"
+Environment="INFLUXDB_ORG=netpulse"
+Environment="INFLUXDB_BUCKET=netpulse"
+Environment="NETPULSE_STATE_FILE=/var/lib/netpulse/state.json"
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/netpulse
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+# Allow network access
+PrivateNetwork=no
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netpulse
+
+[Install]
+WantedBy=multi-user.target

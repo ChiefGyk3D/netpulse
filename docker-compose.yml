@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  influxdb:
+    image: influxdb:2.7
+    container_name: netpulse-influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_USERNAME:-admin}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-speedtest123}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-speedtest}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-speedtest}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-netpulse-token-change-me}
+    networks:
+      - netpulse-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: netpulse-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    depends_on:
+      - influxdb
+    networks:
+      - netpulse-network
+
+  speedtest-runner:
+    build:
+      context: ./speedtest-runner
+      dockerfile: Dockerfile
+    container_name: netpulse-runner
+    restart: unless-stopped
+    environment:
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-netpulse-token-change-me}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-netpulse}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-netpulse}
+      - SPEEDTEST_INTERVAL=${SPEEDTEST_INTERVAL:-1800}
+      - TZ=${TZ:-America/New_York}
+      - NETPULSE_STATE_FILE=/data/state.json
+    volumes:
+      - netpulse-state:/data
+    depends_on:
+      - influxdb
+    networks:
+      - netpulse-network
+
+volumes:
+  influxdb-data:
+  influxdb-config:
+  grafana-data:
+  netpulse-state:
+
+networks:
+  netpulse-network:
+    driver: bridge
