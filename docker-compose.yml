@@ -46,10 +46,18 @@ services:
     container_name: netpulse-runner
     restart: unless-stopped
     environment:
+      # InfluxDB version: "1" or "2" (default: 2)
+      - INFLUXDB_VERSION=${INFLUXDB_VERSION:-2}
       - INFLUXDB_URL=http://influxdb:8086
+      # InfluxDB 2.x settings (token-based)
       - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-netpulse-token-change-me}
       - INFLUXDB_ORG=${INFLUXDB_ORG:-netpulse}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-netpulse}
+      # InfluxDB 1.x settings (username/password) - uncomment if using v1
+      # - INFLUXDB_USERNAME=${INFLUXDB_USERNAME:-admin}
+      # - INFLUXDB_PASSWORD=${INFLUXDB_PASSWORD:-netpulse123}
+      # - INFLUXDB_DATABASE=${INFLUXDB_DATABASE:-netpulse}
+      # General settings
       - SPEEDTEST_INTERVAL=${SPEEDTEST_INTERVAL:-1800}
       - TZ=${TZ:-America/New_York}
       - NETPULSE_STATE_FILE=/data/state.json

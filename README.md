@@ -75,7 +75,14 @@ docker pull ghcr.io/chiefgyk3d/netpulse:latest
 This is more efficient than running a daemon - uses systemd timers instead of Python's internal scheduler:
 
 ```bash
-sudo ./setup.sh --local --interval 30  # Run every 30 minutes
+# Interactive setup (prompts for InfluxDB version and credentials)
+sudo ./setup.sh --local
+
+# Or specify everything on command line (InfluxDB 2.x)
+sudo ./setup.sh --local --influxdb-v2 --influxdb-token "your-token" --interval 30
+
+# For existing InfluxDB 1.x installations
+sudo ./setup.sh --local --influxdb-v1 --influxdb-user admin --influxdb-pass secret
 ```
 
 ### Access Grafana
@@ -126,19 +133,58 @@ sudo ./setup.sh --uninstall
 
 ## Configuration
 
+### InfluxDB Version Support
+
+NetPulse supports both InfluxDB 1.x and 2.x:
+
+| Version | Authentication | Use Case |
+|---------|---------------|----------|
+| **InfluxDB 2.x** | Token-based | Modern, recommended for new installs |
+| **InfluxDB 1.x** | Username/Password | Legacy, existing infrastructure |
+
+**For InfluxDB 2.x (default):**
+```bash
+sudo ./setup.sh --local --influxdb-v2 --influxdb-token "your-api-token"
+```
+
+**For InfluxDB 1.x:**
+```bash
+sudo ./setup.sh --local --influxdb-v1 --influxdb-user admin --influxdb-pass password
+```
+
 ### Environment Variables
+
+#### General Settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `INFLUXDB_USERNAME` | `admin` | InfluxDB admin username |
-| `INFLUXDB_PASSWORD` | `speedtest123` | InfluxDB admin password |
-| `INFLUXDB_ORG` | `speedtest` | InfluxDB organization |
-| `INFLUXDB_BUCKET` | `speedtest` | InfluxDB bucket for data |
-| `INFLUXDB_TOKEN` | `speedtest-token-change-me` | InfluxDB API token |
-| `GRAFANA_USER` | `admin` | Grafana admin username |
-| `GRAFANA_PASSWORD` | `admin` | Grafana admin password |
+| `INFLUXDB_VERSION` | `2` | InfluxDB version: `1` or `2` |
+| `INFLUXDB_URL` | `http://localhost:8086` | InfluxDB server URL |
 | `SPEEDTEST_INTERVAL` | `1800` | Seconds between tests (30 min) |
 | `TZ` | `America/New_York` | Timezone for timestamps |
+
+#### InfluxDB 2.x Settings (token-based)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INFLUXDB_TOKEN` | - | API token (required) |
+| `INFLUXDB_ORG` | `netpulse` | InfluxDB organization |
+| `INFLUXDB_BUCKET` | `netpulse` | InfluxDB bucket for data |
+
+#### InfluxDB 1.x Settings (username/password)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INFLUXDB_USERNAME` | - | Username (required) |
+| `INFLUXDB_PASSWORD` | - | Password (required) |
+| `INFLUXDB_DATABASE` | `netpulse` | Database name |
+
+#### Grafana Settings (Docker only)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GRAFANA_USER` | `admin` | Grafana admin username |
+| `GRAFANA_PASSWORD` | `admin` | Grafana admin password |
 
 ### Recommended Intervals
 

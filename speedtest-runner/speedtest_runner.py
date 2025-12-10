@@ -4,6 +4,7 @@ NetPulse - Network Speed & ISP Monitor
 
 Runs periodic speedtests and logs results to InfluxDB.
 Detects ISP changes by tracking external IP, ASN, and ISP name.
+Supports both InfluxDB 1.x (username/password) and 2.x (token-based) authentication.
 """
 
 import json
@@ -15,15 +16,22 @@ from typing import Optional
 
 import requests
 import schedule
-from influxdb_client import InfluxDBClient, Point
-from influxdb_client.client.write_api import SYNCHRONOUS
 
 
 # Configuration from environment
 INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
-INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "netpulse-token-change-me")
+INFLUXDB_VERSION = os.getenv("INFLUXDB_VERSION", "2")  # "1" or "2"
+
+# InfluxDB 2.x settings (token-based)
+INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN", "")
 INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "netpulse")
 INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "netpulse")
+
+# InfluxDB 1.x settings (username/password)
+INFLUXDB_USERNAME = os.getenv("INFLUXDB_USERNAME", "")
+INFLUXDB_PASSWORD = os.getenv("INFLUXDB_PASSWORD", "")
+INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", "netpulse")
+
 SPEEDTEST_INTERVAL = int(os.getenv("SPEEDTEST_INTERVAL", "1800"))  # 30 minutes default
 
 
@@ -188,16 +196,123 @@ class ISPTracker:
         return change_info
 
 
+class InfluxDBWriter:
+    """Abstract base class for InfluxDB writers."""
+    
+    def write_point(self, measurement: str, tags: dict, fields: dict):
+        """Write a data point to InfluxDB."""
+        raise NotImplementedError
+    
+    def close(self):
+        """Close the connection."""
+        pass
+
+
+class InfluxDB2Writer(InfluxDBWriter):
+    """Writer for InfluxDB 2.x using token-based authentication."""
+    
+    def __init__(self, url: str, token: str, org: str, bucket: str):
+        from influxdb_client import InfluxDBClient
+        from influxdb_client.client.write_api import SYNCHRONOUS
+        
+        self.bucket = bucket
+        self.client = InfluxDBClient(url=url, token=token, org=org)
+        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
+        print(f"Connected to InfluxDB 2.x at {url} (org: {org}, bucket: {bucket})")
+    
+    def write_point(self, measurement: str, tags: dict, fields: dict):
+        from influxdb_client import Point
+        
+        point = Point(measurement)
+        for key, value in tags.items():
+            if value is not None:
+                point = point.tag(key, str(value))
+        for key, value in fields.items():
+            if value is not None:
+                point = point.field(key, value)
+        
+        self.write_api.write(bucket=self.bucket, record=point)
+    
+    def close(self):
+        self.client.close()
+
+
+class InfluxDB1Writer(InfluxDBWriter):
+    """Writer for InfluxDB 1.x using username/password authentication."""
+    
+    def __init__(self, url: str, username: str, password: str, database: str):
+        from influxdb import InfluxDBClient as InfluxDB1Client
+        
+        # Parse URL to get host and port
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 8086
+        ssl = parsed.scheme == "https"
+        
+        self.database = database
+        self.client = InfluxDB1Client(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            database=database,
+            ssl=ssl
+        )
+        
+        # Create database if it doesn't exist
+        try:
+            self.client.create_database(database)
+        except Exception:
+            pass  # Database might already exist
+        
+        print(f"Connected to InfluxDB 1.x at {host}:{port} (database: {database})")
+    
+    def write_point(self, measurement: str, tags: dict, fields: dict):
+        # Filter out None values
+        clean_tags = {k: str(v) for k, v in tags.items() if v is not None}
+        clean_fields = {k: v for k, v in fields.items() if v is not None}
+        
+        point = {
+            "measurement": measurement,
+            "tags": clean_tags,
+            "fields": clean_fields
+        }
+        self.client.write_points([point])
+    
+    def close(self):
+        self.client.close()
+
+
+def create_influxdb_writer() -> InfluxDBWriter:
+    """Factory function to create the appropriate InfluxDB writer."""
+    version = INFLUXDB_VERSION.strip()
+    
+    if version == "1":
+        if not INFLUXDB_USERNAME:
+            raise ValueError("INFLUXDB_USERNAME is required for InfluxDB 1.x")
+        return InfluxDB1Writer(
+            url=INFLUXDB_URL,
+            username=INFLUXDB_USERNAME,
+            password=INFLUXDB_PASSWORD,
+            database=INFLUXDB_DATABASE
+        )
+    else:  # Default to version 2
+        if not INFLUXDB_TOKEN:
+            raise ValueError("INFLUXDB_TOKEN is required for InfluxDB 2.x")
+        return InfluxDB2Writer(
+            url=INFLUXDB_URL,
+            token=INFLUXDB_TOKEN,
+            org=INFLUXDB_ORG,
+            bucket=INFLUXDB_BUCKET
+        )
+
+
 class SpeedtestRunner:
     """Runs speedtests and logs results to InfluxDB."""
     
     def __init__(self):
-        self.client = InfluxDBClient(
-            url=INFLUXDB_URL,
-            token=INFLUXDB_TOKEN,
-            org=INFLUXDB_ORG
-        )
-        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
+        self.writer = create_influxdb_writer()
         self.isp_tracker = ISPTracker()
         self.speedtest_accepted_license = False
     
@@ -297,46 +412,52 @@ class SpeedtestRunner:
         """Write speedtest results to InfluxDB."""
         try:
             # Main speedtest metrics
-            point = Point("speedtest") \
-                .tag("server_name", result.get("server_name", "unknown")) \
-                .tag("server_location", result.get("server_location", "unknown")) \
-                .tag("server_country", result.get("server_country", "unknown")) \
-                .tag("isp", ip_info.get("isp", result.get("isp", "unknown"))) \
-                .tag("asn", ip_info.get("asn", "unknown")) \
-                .tag("connection_type", ip_info.get("connection_type", "unknown")) \
-                .tag("external_ip", ip_info.get("ip", result.get("external_ip", "unknown"))) \
-                .field("download_mbps", result.get("download_mbps", 0.0)) \
-                .field("upload_mbps", result.get("upload_mbps", 0.0)) \
-                .field("download_bandwidth", result.get("download_bandwidth", 0)) \
-                .field("upload_bandwidth", result.get("upload_bandwidth", 0)) \
-                .field("ping_latency", result.get("ping_latency", 0.0)) \
-                .field("ping_jitter", result.get("ping_jitter", 0.0)) \
-                .field("ping_low", result.get("ping_low", 0.0)) \
-                .field("ping_high", result.get("ping_high", 0.0)) \
-                .field("download_latency_iqm", result.get("download_latency_iqm", 0.0)) \
-                .field("upload_latency_iqm", result.get("upload_latency_iqm", 0.0)) \
-                .field("packet_loss", result.get("packet_loss") if result.get("packet_loss") is not None else 0.0) \
-                .field("result_url", result.get("result_url", ""))
+            tags = {
+                "server_name": result.get("server_name", "unknown"),
+                "server_location": result.get("server_location", "unknown"),
+                "server_country": result.get("server_country", "unknown"),
+                "isp": ip_info.get("isp", result.get("isp", "unknown")),
+                "asn": ip_info.get("asn", "unknown"),
+                "connection_type": ip_info.get("connection_type", "unknown"),
+                "external_ip": ip_info.get("ip", result.get("external_ip", "unknown")),
+            }
+            fields = {
+                "download_mbps": result.get("download_mbps", 0.0),
+                "upload_mbps": result.get("upload_mbps", 0.0),
+                "download_bandwidth": result.get("download_bandwidth", 0),
+                "upload_bandwidth": result.get("upload_bandwidth", 0),
+                "ping_latency": result.get("ping_latency", 0.0),
+                "ping_jitter": result.get("ping_jitter", 0.0),
+                "ping_low": result.get("ping_low", 0.0),
+                "ping_high": result.get("ping_high", 0.0),
+                "download_latency_iqm": result.get("download_latency_iqm", 0.0),
+                "upload_latency_iqm": result.get("upload_latency_iqm", 0.0),
+                "packet_loss": result.get("packet_loss") if result.get("packet_loss") is not None else 0.0,
+                "result_url": result.get("result_url", ""),
+            }
             
-            self.write_api.write(bucket=INFLUXDB_BUCKET, record=point)
+            self.writer.write_point("speedtest", tags, fields)
             
             # Write ISP change event if detected
             if isp_change.get("changed"):
-                change_point = Point("isp_change") \
-                    .tag("previous_isp", isp_change.get("previous_isp", "unknown")) \
-                    .tag("current_isp", ip_info.get("isp", "unknown")) \
-                    .tag("previous_asn", isp_change.get("previous_asn", "unknown")) \
-                    .tag("current_asn", ip_info.get("asn", "unknown")) \
-                    .tag("previous_connection_type", isp_change.get("previous_connection_type", "unknown")) \
-                    .tag("current_connection_type", ip_info.get("connection_type", "unknown")) \
-                    .field("ip_changed", isp_change.get("ip_changed", False)) \
-                    .field("isp_changed", isp_change.get("isp_changed", False)) \
-                    .field("asn_changed", isp_change.get("asn_changed", False)) \
-                    .field("previous_ip", isp_change.get("previous_ip", "")) \
-                    .field("current_ip", ip_info.get("ip", "")) \
-                    .field("event", 1)  # Marker for annotations
+                change_tags = {
+                    "previous_isp": isp_change.get("previous_isp", "unknown"),
+                    "current_isp": ip_info.get("isp", "unknown"),
+                    "previous_asn": isp_change.get("previous_asn", "unknown"),
+                    "current_asn": ip_info.get("asn", "unknown"),
+                    "previous_connection_type": isp_change.get("previous_connection_type", "unknown"),
+                    "current_connection_type": ip_info.get("connection_type", "unknown"),
+                }
+                change_fields = {
+                    "ip_changed": isp_change.get("ip_changed", False),
+                    "isp_changed": isp_change.get("isp_changed", False),
+                    "asn_changed": isp_change.get("asn_changed", False),
+                    "previous_ip": isp_change.get("previous_ip", ""),
+                    "current_ip": ip_info.get("ip", ""),
+                    "event": 1,  # Marker for annotations
+                }
                 
-                self.write_api.write(bucket=INFLUXDB_BUCKET, record=change_point)
+                self.writer.write_point("isp_change", change_tags, change_fields)
                 print(f"  ⚠️  ISP CHANGE DETECTED: {isp_change.get('previous_isp')} -> {ip_info.get('isp')}")
             
             print(f"  Results written to InfluxDB")
@@ -368,11 +489,12 @@ class SpeedtestRunner:
         else:
             # Write at least the IP info if speedtest failed
             try:
-                point = Point("speedtest_error") \
-                    .tag("isp", ip_info.get("isp", "unknown")) \
-                    .tag("connection_type", ip_info.get("connection_type", "unknown")) \
-                    .field("error", 1)
-                self.write_api.write(bucket=INFLUXDB_BUCKET, record=point)
+                tags = {
+                    "isp": ip_info.get("isp", "unknown"),
+                    "connection_type": ip_info.get("connection_type", "unknown"),
+                }
+                fields = {"error": 1}
+                self.writer.write_point("speedtest_error", tags, fields)
             except Exception as e:
                 print(f"Error logging speedtest failure: {e}")
         
