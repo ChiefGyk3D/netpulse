@@ -303,4 +303,4 @@ Edit `speedtest_runner.py` and modify the `get_ip_info()` method to add your ISP
 
 ## License
 
-MIT License - Feel free to use and modify!
+Mozilla Public License 2.0 - Feel free to use and modify!
