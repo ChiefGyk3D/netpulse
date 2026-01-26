@@ -1,5 +1,5 @@
 # InfluxDB clients (both versions supported)
-influxdb-client==1.49.0  # InfluxDB 2.x (token-based auth)
+influxdb-client==1.50.0  # InfluxDB 2.x (token-based auth)
 influxdb==5.3.2          # InfluxDB 1.x (username/password auth)
 
 # HTTP requests
