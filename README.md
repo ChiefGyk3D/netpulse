@@ -4,20 +4,28 @@ A complete solution for monitoring your internet connection speed, latency, jitt
 
 ## Features
 
+- **Dual Speed Test Engines**:
+  - **Simplified** (Ookla): Traditional Ookla/speedtest.net tests every 30 minutes
+  - **Enhanced** (Cloudflare): Cloudflare infrastructure-based tests with PoP tracking, default every 6 hours
 - **Speed Metrics**: Download/upload speed in Mbps
 - **Quality Metrics**: Latency, jitter, packet loss
 - **ISP Change Detection**: Automatically detects when your connection fails over to a backup ISP
 - **Connection Type Tracking**: Identifies cable, cellular, fiber, DSL connections
-- **Beautiful Dashboard**: Pre-configured Grafana dashboard with all metrics
+- **Flexible Scheduling**: Interval-based *or* cron-based (e.g., at 03:00, 09:00, 15:00, 21:00)
+- **IP Privacy Mode**: Optionally masks your external IP in dashboards (great for streaming/public displays)
+- **Beautiful Dashboards**: Pre-configured Grafana dashboards — one per speed test engine
 - **Annotations**: Visual markers on graphs when ISP failovers occur
 
 ## Architecture
 
 ```
-┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
-│   Speedtest Runner  │────▶│      InfluxDB       │◀────│       Grafana       │
-│   (Python + Ookla)  │     │  (Time-series DB)   │     │   (Visualization)   │
-└─────────────────────┘     └─────────────────────┘     └─────────────────────┘
+┌──────────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
+│  Simplified Runner       │────▶│      InfluxDB       │◀────│       Grafana       │
+│  (Python + Ookla CLI)    │     │  (Time-series DB)   │     │   (Visualization)   │
+├──────────────────────────┤     │                     │     │  - Ookla Dashboard  │
+│  Enhanced Runner         │────▶│                     │     │  - CF Dashboard     │
+│  (Python + Cloudflare API│     │                     │     └─────────────────────┘
+└──────────────────────────┘     └─────────────────────┘
          │
          ▼
    ┌──────────────┐
@@ -53,8 +61,11 @@ cp .env.example .env
 # Edit .env with your preferred settings
 nano .env
 
-# Start the stack
+# Start the simplified stack (Ookla runner only)
 docker-compose up -d
+
+# OR start with the enhanced Cloudflare runner as well
+docker-compose --profile enhanced up -d
 ```
 
 ### Option 3: Docker with GHCR Image
@@ -160,7 +171,12 @@ sudo ./setup.sh --local --influxdb-v1 --influxdb-user admin --influxdb-pass pass
 |----------|---------|-------------|
 | `INFLUXDB_VERSION` | `2` | InfluxDB version: `1` or `2` |
 | `INFLUXDB_URL` | `http://localhost:8086` | InfluxDB server URL |
-| `SPEEDTEST_INTERVAL` | `1800` | Seconds between tests (30 min) |
+| `SPEEDTEST_INTERVAL` | `1800` | Seconds between Ookla tests (30 min) |
+| `SPEEDTEST_CRON` | _(empty)_ | Cron expression for Ookla tests (overrides `SPEEDTEST_INTERVAL`) |
+| `CF_SPEEDTEST_INTERVAL` | `21600` | Seconds between Cloudflare tests (6 hours) |
+| `CF_SPEEDTEST_CRON` | _(empty)_ | Cron expression for Cloudflare tests (overrides `CF_SPEEDTEST_INTERVAL`) |
+| `CF_LATENCY_SAMPLES` | `20` | Number of latency samples for Cloudflare test |
+| `HIDE_EXTERNAL_IP` | `false` | Set `true` to mask your external IP in InfluxDB/Grafana |
 | `TZ` | `America/New_York` | Timezone for timestamps |
 
 #### InfluxDB 2.x Settings (token-based)
@@ -186,14 +202,50 @@ sudo ./setup.sh --local --influxdb-v1 --influxdb-user admin --influxdb-pass pass
 | `GRAFANA_USER` | `admin` | Grafana admin username |
 | `GRAFANA_PASSWORD` | `admin` | Grafana admin password |
 
+### Scheduling Options
+
+Both the simplified (Ookla) and enhanced (Cloudflare) runners support two scheduling modes:
+
+**1. Interval-based** (default): run every N seconds.
+```bash
+SPEEDTEST_INTERVAL=1800          # Ookla: every 30 minutes
+CF_SPEEDTEST_INTERVAL=21600      # Cloudflare: every 6 hours
+```
+
+**2. Cron-based**: run at specific times using a standard cron expression. This overrides the interval.
+```bash
+# Run at 03:00, 09:00, 15:00, 21:00 every day:
+CF_SPEEDTEST_CRON=0 3,9,15,21 * * *
+
+# Run every 6 hours from midnight:
+CF_SPEEDTEST_CRON=0 */6 * * *
+
+# Run every 12 hours from midnight:
+CF_SPEEDTEST_CRON=0 */12 * * *
+
+# Ookla: run every 30 minutes:
+SPEEDTEST_CRON=*/30 * * * *
+```
+
+### IP Privacy Mode
+
+To hide your external IP address in dashboards (e.g., when streaming):
+
+```bash
+# In .env
+HIDE_EXTERNAL_IP=true
+```
+
+When enabled, the IP is stored as `hidden` in InfluxDB instead of the real address. This affects all IP fields written by both the simplified and enhanced runners.
+
 ### Recommended Intervals
 
-| Interval | Seconds | Use Case |
-|----------|---------|----------|
-| 15 minutes | `900` | Detailed monitoring |
-| 30 minutes | `1800` | Standard (default) |
-| 1 hour | `3600` | Light monitoring |
-| 4 hours | `14400` | Minimal data |
+| Use Case | Ookla | Cloudflare |
+|----------|-------|------------|
+| Detailed monitoring | `900` (15 min) | `3600` (1 hour) |
+| Standard | `1800` (30 min) | `21600` (6 hours) |
+| Light monitoring | `3600` (1 hour) | `43200` (12 hours) |
+| Minimal data | `14400` (4 hours) | `86400` (24 hours) |
 
 ## ISP Change Detection
 
@@ -223,6 +275,52 @@ In Grafana:
 3. **Pie Charts**: Distribution of tests by ISP and connection type
 4. **Failover Counter**: Total number of ISP failovers in the selected time range
 
+## Enhanced Runner (Cloudflare Speed Test)
+
+The enhanced runner uses [Cloudflare's speed test infrastructure](https://speed.cloudflare.com) to provide a
+more robust view of your connection quality, independently of third-party speed test servers.
+
+### What It Measures
+
+| Metric | Description |
+|--------|-------------|
+| Download speed (Mbps) | 90th-percentile throughput across 5 download sizes (100 KB → 100 MB) |
+| Upload speed (Mbps) | 90th-percentile throughput across 4 upload sizes (100 KB → 25 MB) |
+| Latency (ms) | Median unloaded RTT to the nearest Cloudflare PoP |
+| Jitter (ms) | Mean deviation of consecutive latency samples |
+| Packet loss (%) | Failed requests out of the latency sample set |
+| Cloudflare PoP | Three-letter IATA code for the Cloudflare data center used (e.g. `DFW`, `LAX`) |
+| PoP location | Country code of the Cloudflare PoP |
+
+### Activating the Enhanced Runner (Docker)
+
+```bash
+# Start the full stack including the Cloudflare runner
+docker-compose --profile enhanced up -d
+
+# View Cloudflare runner logs
+docker-compose logs -f cloudflare-runner
+```
+
+### Configuring the Schedule
+
+The default interval is **6 hours**. To run at fixed clock times, use a cron expression:
+
+```bash
+# In .env — run at 03:00, 09:00, 15:00, 21:00 daily
+CF_SPEEDTEST_CRON=0 3,9,15,21 * * *
+```
+
+### InfluxDB Measurement
+
+Cloudflare results are stored in the **`cloudflare_speedtest`** measurement (in the same bucket as Ookla
+results), keeping the two datasets separate and easy to query independently.
+
+### Cloudflare Dashboard
+
+The **Cloudflare Speed Test Dashboard** is auto-provisioned in Grafana alongside the standard Ookla dashboard.
+It includes all the same panel types (current status, time series, ISP tracking) plus a **Cloudflare PoP** indicator showing which Cloudflare data center served your test.
+
 ## Dashboard Panels
 
 ### Current Status Row
@@ -231,7 +329,7 @@ In Grafana:
 - Latency (ms)
 - Jitter (ms)
 - Packet Loss (%)
-- Current Connection Type
+- Current Connection Type / Cloudflare PoP (enhanced dashboard)
 
 ### Speed Over Time
 - Combined download/upload graph with mean, max, min statistics
@@ -259,7 +357,11 @@ docker-compose ps
 
 ### View Speedtest Runner Logs
 ```bash
+# Simplified (Ookla) runner
 docker-compose logs -f speedtest-runner
+
+# Enhanced (Cloudflare) runner
+docker-compose logs -f cloudflare-runner
 ```
 
 ### View All Logs

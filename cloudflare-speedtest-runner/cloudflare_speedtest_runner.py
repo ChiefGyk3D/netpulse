@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-NetPulse - Network Speed & ISP Monitor
+NetPulse - Cloudflare Enhanced Speed Test Runner
 
-Runs periodic speedtests and logs results to InfluxDB.
+Runs periodic speed tests using Cloudflare's speed test infrastructure
+(speed.cloudflare.com) and logs results to InfluxDB.
+
 Detects ISP changes by tracking external IP, ASN, and ISP name.
 Supports both InfluxDB 1.x (username/password) and 2.x (token-based) authentication.
+Supports interval-based and cron-based scheduling.
 """
 
 import json
 import os
-import subprocess
+import statistics
 import time
 from datetime import datetime
 from typing import Optional
 
 import requests
-import schedule
-
 
 # Configuration from environment
 INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
@@ -32,28 +33,39 @@ INFLUXDB_USERNAME = os.getenv("INFLUXDB_USERNAME", "")
 INFLUXDB_PASSWORD = os.getenv("INFLUXDB_PASSWORD", "")
 INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", "netpulse")
 
-SPEEDTEST_INTERVAL = int(os.getenv("SPEEDTEST_INTERVAL", "1800"))  # 30 minutes default
+# Scheduling: use SPEEDTEST_CRON if set, otherwise fall back to SPEEDTEST_INTERVAL
+SPEEDTEST_INTERVAL = int(os.getenv("SPEEDTEST_INTERVAL", "21600"))  # 6 hours default
 SPEEDTEST_CRON = os.getenv("SPEEDTEST_CRON", "")  # e.g. "0 3,9,15,21 * * *"
 
 # Privacy: set to "true" to mask external IP in stored data
 HIDE_EXTERNAL_IP = os.getenv("HIDE_EXTERNAL_IP", "false").lower() in ("true", "1", "yes")
 
+# Cloudflare speed test endpoint
+CF_SPEED_HOST = "https://speed.cloudflare.com"
+
+# Number of latency measurements to take
+LATENCY_SAMPLES = int(os.getenv("CF_LATENCY_SAMPLES", "20"))
+
+# Download/upload test sizes (bytes)
+DOWNLOAD_SIZES = [100_000, 1_000_000, 10_000_000, 25_000_000, 100_000_000]
+UPLOAD_SIZES = [100_000, 1_000_000, 10_000_000, 25_000_000]
+
 
 class ISPTracker:
     """Tracks ISP information and detects changes with persistent state."""
-    
+
     # State file location - works for both local and Docker
-    STATE_FILE = os.getenv("NETPULSE_STATE_FILE", "/tmp/netpulse_state.json")
-    
+    STATE_FILE = os.getenv("NETPULSE_STATE_FILE", "/tmp/netpulse_cf_state.json")
+
     def __init__(self):
         self.last_ip: Optional[str] = None
         self.last_isp: Optional[str] = None
         self.last_asn: Optional[str] = None
         self.last_connection_type: Optional[str] = None
-        
+
         # Load persisted state from file
         self._load_state()
-    
+
     def _load_state(self):
         """Load previous ISP state from file."""
         try:
@@ -67,7 +79,7 @@ class ISPTracker:
                     print(f"Loaded previous state: IP={self.last_ip}, ISP={self.last_isp}")
         except Exception as e:
             print(f"Could not load previous state: {e}")
-    
+
     def _save_state(self):
         """Save current ISP state to file for persistence."""
         try:
@@ -82,7 +94,7 @@ class ISPTracker:
                 json.dump(state, f)
         except Exception as e:
             print(f"Could not save state: {e}")
-    
+
     def get_ip_info(self) -> dict:
         """
         Get current external IP and ISP information.
@@ -96,9 +108,9 @@ class ISPTracker:
             "city": None,
             "region": None,
             "country": None,
-            "connection_type": None  # Will be inferred
+            "connection_type": None
         }
-        
+
         # Try ipinfo.io first (no API key needed for basic info)
         try:
             response = requests.get("https://ipinfo.io/json", timeout=10)
@@ -109,7 +121,7 @@ class ISPTracker:
                 ip_info["city"] = data.get("city")
                 ip_info["region"] = data.get("region")
                 ip_info["country"] = data.get("country")
-                
+
                 # Parse ASN from org field (format: "AS12345 Company Name")
                 org = data.get("org", "")
                 if org.startswith("AS"):
@@ -120,7 +132,7 @@ class ISPTracker:
                     ip_info["isp"] = org
         except Exception as e:
             print(f"Error fetching from ipinfo.io: {e}")
-        
+
         # Fallback to ip-api.com if ipinfo.io failed
         if not ip_info["ip"]:
             try:
@@ -136,7 +148,7 @@ class ISPTracker:
                     ip_info["country"] = data.get("countryCode")
             except Exception as e:
                 print(f"Error fetching from ip-api.com: {e}")
-        
+
         # Infer connection type based on ISP name keywords
         if ip_info["isp"]:
             isp_lower = ip_info["isp"].lower()
@@ -150,9 +162,9 @@ class ISPTracker:
                 ip_info["connection_type"] = "dsl"
             else:
                 ip_info["connection_type"] = "unknown"
-        
+
         return ip_info
-    
+
     def check_for_change(self, current_info: dict) -> dict:
         """
         Check if ISP has changed since last check.
@@ -168,45 +180,45 @@ class ISPTracker:
             "previous_asn": self.last_asn,
             "previous_connection_type": self.last_connection_type
         }
-        
+
         current_ip = current_info.get("ip")
         current_isp = current_info.get("isp")
         current_asn = current_info.get("asn")
         current_connection_type = current_info.get("connection_type")
-        
+
         # Check for changes (only if we have previous values)
         if self.last_ip is not None:
             if current_ip != self.last_ip:
                 change_info["ip_changed"] = True
                 change_info["changed"] = True
-            
+
             if current_isp != self.last_isp:
                 change_info["isp_changed"] = True
                 change_info["changed"] = True
-            
+
             if current_asn != self.last_asn:
                 change_info["asn_changed"] = True
                 change_info["changed"] = True
-        
+
         # Update last known values
         self.last_ip = current_ip
         self.last_isp = current_isp
         self.last_asn = current_asn
         self.last_connection_type = current_connection_type
-        
+
         # Persist state to file for next run (important for --once mode)
         self._save_state()
-        
+
         return change_info
 
 
 class InfluxDBWriter:
     """Abstract base class for InfluxDB writers."""
-    
+
     def write_point(self, measurement: str, tags: dict, fields: dict):
         """Write a data point to InfluxDB."""
         raise NotImplementedError
-    
+
     def close(self):
         """Close the connection."""
         pass
@@ -214,19 +226,19 @@ class InfluxDBWriter:
 
 class InfluxDB2Writer(InfluxDBWriter):
     """Writer for InfluxDB 2.x using token-based authentication."""
-    
+
     def __init__(self, url: str, token: str, org: str, bucket: str):
         from influxdb_client import InfluxDBClient
         from influxdb_client.client.write_api import SYNCHRONOUS
-        
+
         self.bucket = bucket
         self.client = InfluxDBClient(url=url, token=token, org=org)
         self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
         print(f"Connected to InfluxDB 2.x at {url} (org: {org}, bucket: {bucket})")
-    
+
     def write_point(self, measurement: str, tags: dict, fields: dict):
         from influxdb_client import Point
-        
+
         point = Point(measurement)
         for key, value in tags.items():
             if value is not None:
@@ -234,26 +246,26 @@ class InfluxDB2Writer(InfluxDBWriter):
         for key, value in fields.items():
             if value is not None:
                 point = point.field(key, value)
-        
+
         self.write_api.write(bucket=self.bucket, record=point)
-    
+
     def close(self):
         self.client.close()
 
 
 class InfluxDB1Writer(InfluxDBWriter):
     """Writer for InfluxDB 1.x using username/password authentication."""
-    
+
     def __init__(self, url: str, username: str, password: str, database: str):
         from influxdb import InfluxDBClient as InfluxDB1Client
-        
+
         # Parse URL to get host and port
         from urllib.parse import urlparse
         parsed = urlparse(url)
         host = parsed.hostname or "localhost"
         port = parsed.port or 8086
         ssl = parsed.scheme == "https"
-        
+
         self.database = database
         self.client = InfluxDB1Client(
             host=host,
@@ -263,27 +275,27 @@ class InfluxDB1Writer(InfluxDBWriter):
             database=database,
             ssl=ssl
         )
-        
+
         # Create database if it doesn't exist
         try:
             self.client.create_database(database)
         except Exception:
             pass  # Database might already exist
-        
+
         print(f"Connected to InfluxDB 1.x at {host}:{port} (database: {database})")
-    
+
     def write_point(self, measurement: str, tags: dict, fields: dict):
         # Filter out None values
         clean_tags = {k: str(v) for k, v in tags.items() if v is not None}
         clean_fields = {k: v for k, v in fields.items() if v is not None}
-        
+
         point = {
             "measurement": measurement,
             "tags": clean_tags,
             "fields": clean_fields
         }
         self.client.write_points([point])
-    
+
     def close(self):
         self.client.close()
 
@@ -291,7 +303,7 @@ class InfluxDB1Writer(InfluxDBWriter):
 def create_influxdb_writer() -> InfluxDBWriter:
     """Factory function to create the appropriate InfluxDB writer."""
     version = INFLUXDB_VERSION.strip()
-    
+
     if version == "1":
         if not INFLUXDB_USERNAME:
             raise ValueError("INFLUXDB_USERNAME is required for InfluxDB 1.x")
@@ -312,141 +324,226 @@ def create_influxdb_writer() -> InfluxDBWriter:
         )
 
 
-class SpeedtestRunner:
-    """Runs speedtests and logs results to InfluxDB."""
-    
+class CloudflareSpeedtestRunner:
+    """Runs Cloudflare speed tests and logs results to InfluxDB."""
+
     def __init__(self):
         self.writer = create_influxdb_writer()
         self.isp_tracker = ISPTracker()
-        self.speedtest_accepted_license = False
-    
-    def accept_speedtest_license(self):
-        """Accept the Ookla speedtest license on first run."""
-        if not self.speedtest_accepted_license:
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "NetPulse/2.0 (Cloudflare Speed Test Runner)"
+        })
+
+    def get_cloudflare_info(self) -> dict:
+        """
+        Get Cloudflare PoP (Point of Presence) and connection info.
+        Queries speed.cloudflare.com/cdn-cgi/trace for server metadata.
+        """
+        info = {
+            "colo": None,
+            "loc": None,
+            "ip": None,
+            "http": None,
+        }
+        try:
+            response = self.session.get(
+                f"{CF_SPEED_HOST}/cdn-cgi/trace", timeout=10
+            )
+            response.raise_for_status()
+            for line in response.text.splitlines():
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    info[key.strip()] = value.strip()
+        except Exception as e:
+            print(f"Error fetching Cloudflare trace info: {e}")
+        return info
+
+    def measure_latency(self) -> tuple:
+        """
+        Measure unloaded latency, jitter, and packet loss using
+        repeated small requests to the Cloudflare speed test server.
+
+        Returns: (median_latency_ms, jitter_ms, packet_loss_pct)
+        """
+        rtts = []
+        for _ in range(LATENCY_SAMPLES):
+            start = time.monotonic()
             try:
-                # Accept the license by running with --accept-license
-                subprocess.run(
-                    ["speedtest", "--accept-license", "--accept-gdpr"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
+                r = self.session.get(
+                    f"{CF_SPEED_HOST}/__down?bytes=0", timeout=5
                 )
-                self.speedtest_accepted_license = True
+                r.raise_for_status()
+            except Exception:
+                continue
+            rtts.append((time.monotonic() - start) * 1000)
+
+        if not rtts:
+            return None, None, 100.0
+
+        packet_loss = (LATENCY_SAMPLES - len(rtts)) / LATENCY_SAMPLES * 100
+
+        median_latency = statistics.median(rtts)
+
+        # Jitter = mean of absolute differences between consecutive samples
+        if len(rtts) > 1:
+            diffs = [abs(rtts[i + 1] - rtts[i]) for i in range(len(rtts) - 1)]
+            jitter = statistics.mean(diffs)
+        else:
+            jitter = 0.0
+
+        return median_latency, jitter, packet_loss
+
+    def measure_download(self) -> Optional[float]:
+        """
+        Measure download speed by downloading files of progressively larger
+        sizes and returning the 90th-percentile throughput in Mbps.
+        """
+        throughputs = []
+
+        for size in DOWNLOAD_SIZES:
+            start = time.monotonic()
+            total = 0
+            try:
+                r = self.session.get(
+                    f"{CF_SPEED_HOST}/__down?bytes={size}",
+                    timeout=120,
+                    stream=True,
+                )
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=65536):
+                    total += len(chunk)
             except Exception as e:
-                print(f"Error accepting speedtest license: {e}")
-    
+                print(f"  Download error at {size // 1000}KB: {e}")
+                break  # stop at first failure for large sizes
+
+            elapsed = time.monotonic() - start
+            if elapsed > 0 and total > 0:
+                mbps = (total * 8) / elapsed / 1_000_000
+                throughputs.append(mbps)
+
+        if not throughputs:
+            return None
+
+        # Return 90th percentile
+        throughputs.sort()
+        p90_idx = max(0, int(len(throughputs) * 0.9) - 1)
+        return throughputs[p90_idx]
+
+    def measure_upload(self) -> Optional[float]:
+        """
+        Measure upload speed by uploading payloads of progressively larger
+        sizes and returning the 90th-percentile throughput in Mbps.
+        """
+        throughputs = []
+
+        for size in UPLOAD_SIZES:
+            data = b"0" * size
+            start = time.monotonic()
+            try:
+                r = self.session.post(
+                    f"{CF_SPEED_HOST}/__up",
+                    data=data,
+                    timeout=120,
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+                r.raise_for_status()
+            except Exception as e:
+                print(f"  Upload error at {size // 1000}KB: {e}")
+                break
+
+            elapsed = time.monotonic() - start
+            if elapsed > 0:
+                mbps = (size * 8) / elapsed / 1_000_000
+                throughputs.append(mbps)
+
+        if not throughputs:
+            return None
+
+        # Return 90th percentile
+        throughputs.sort()
+        p90_idx = max(0, int(len(throughputs) * 0.9) - 1)
+        return throughputs[p90_idx]
+
     def run_speedtest(self) -> Optional[dict]:
         """
-        Run speedtest using Ookla's official CLI.
-        Returns parsed results or None if failed.
+        Run a full Cloudflare speed test.
+        Returns a dict of results or None on failure.
         """
-        self.accept_speedtest_license()
-        
-        try:
-            print(f"[{datetime.now().isoformat()}] Starting speedtest...")
-            result = subprocess.run(
-                ["speedtest", "--format=json", "--accept-license", "--accept-gdpr"],
-                capture_output=True,
-                text=True,
-                timeout=120  # 2 minute timeout
-            )
-            
-            if result.returncode != 0:
-                print(f"Speedtest failed: {result.stderr}")
-                return None
-            
-            data = json.loads(result.stdout)
-            
-            # Parse results
-            speedtest_result = {
-                "timestamp": data.get("timestamp"),
-                "ping_jitter": data.get("ping", {}).get("jitter"),
-                "ping_latency": data.get("ping", {}).get("latency"),
-                "ping_low": data.get("ping", {}).get("low"),
-                "ping_high": data.get("ping", {}).get("high"),
-                "download_bandwidth": data.get("download", {}).get("bandwidth"),  # bytes/sec
-                "download_bytes": data.get("download", {}).get("bytes"),
-                "download_elapsed": data.get("download", {}).get("elapsed"),
-                "download_latency_iqm": data.get("download", {}).get("latency", {}).get("iqm"),
-                "download_latency_low": data.get("download", {}).get("latency", {}).get("low"),
-                "download_latency_high": data.get("download", {}).get("latency", {}).get("high"),
-                "upload_bandwidth": data.get("upload", {}).get("bandwidth"),  # bytes/sec
-                "upload_bytes": data.get("upload", {}).get("bytes"),
-                "upload_elapsed": data.get("upload", {}).get("elapsed"),
-                "upload_latency_iqm": data.get("upload", {}).get("latency", {}).get("iqm"),
-                "upload_latency_low": data.get("upload", {}).get("latency", {}).get("low"),
-                "upload_latency_high": data.get("upload", {}).get("latency", {}).get("high"),
-                "packet_loss": data.get("packetLoss"),
-                "server_id": data.get("server", {}).get("id"),
-                "server_name": data.get("server", {}).get("name"),
-                "server_location": data.get("server", {}).get("location"),
-                "server_country": data.get("server", {}).get("country"),
-                "server_host": data.get("server", {}).get("host"),
-                "result_id": data.get("result", {}).get("id"),
-                "result_url": data.get("result", {}).get("url"),
-                "isp": data.get("isp"),
-                "external_ip": data.get("interface", {}).get("externalIp"),
-                "internal_ip": data.get("interface", {}).get("internalIp"),
-            }
-            
-            # Convert bandwidth from bytes/sec to Mbps for readability
-            if speedtest_result["download_bandwidth"]:
-                speedtest_result["download_mbps"] = (speedtest_result["download_bandwidth"] * 8) / 1_000_000
-            if speedtest_result["upload_bandwidth"]:
-                speedtest_result["upload_mbps"] = (speedtest_result["upload_bandwidth"] * 8) / 1_000_000
-            
-            print(f"  Download: {speedtest_result.get('download_mbps', 0):.2f} Mbps")
-            print(f"  Upload: {speedtest_result.get('upload_mbps', 0):.2f} Mbps")
-            print(f"  Ping: {speedtest_result.get('ping_latency', 0):.2f} ms")
-            print(f"  Jitter: {speedtest_result.get('ping_jitter', 0):.2f} ms")
-            
-            return speedtest_result
-            
-        except subprocess.TimeoutExpired:
-            print("Speedtest timed out")
+        print(f"[{datetime.now().isoformat()}] Starting Cloudflare speed test...")
+
+        # Step 1: Get Cloudflare PoP info
+        cf_info = self.get_cloudflare_info()
+        colo = cf_info.get("colo", "unknown")
+        loc = cf_info.get("loc", "unknown")
+        print(f"  Cloudflare PoP: {colo} ({loc})")
+
+        # Step 2: Measure latency
+        print(f"  Measuring latency ({LATENCY_SAMPLES} samples)...")
+        latency_ms, jitter_ms, packet_loss = self.measure_latency()
+        if latency_ms is not None:
+            print(f"  Latency: {latency_ms:.2f} ms  Jitter: {jitter_ms:.2f} ms  Loss: {packet_loss:.1f}%")
+        else:
+            print("  Latency measurement failed")
+
+        # Step 3: Measure download
+        print("  Measuring download speed...")
+        download_mbps = self.measure_download()
+        if download_mbps is not None:
+            print(f"  Download: {download_mbps:.2f} Mbps")
+        else:
+            print("  Download measurement failed")
+
+        # Step 4: Measure upload
+        print("  Measuring upload speed...")
+        upload_mbps = self.measure_upload()
+        if upload_mbps is not None:
+            print(f"  Upload: {upload_mbps:.2f} Mbps")
+        else:
+            print("  Upload measurement failed")
+
+        if download_mbps is None and upload_mbps is None and latency_ms is None:
+            print("All measurements failed - aborting")
             return None
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse speedtest output: {e}")
-            return None
-        except Exception as e:
-            print(f"Error running speedtest: {e}")
-            return None
-    
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "download_mbps": download_mbps,
+            "upload_mbps": upload_mbps,
+            "latency_ms": latency_ms,
+            "jitter_ms": jitter_ms,
+            "packet_loss": packet_loss,
+            "colo": colo,
+            "colo_location": loc,
+        }
+
     def write_speedtest_result(self, result: dict, ip_info: dict, isp_change: dict):
-        """Write speedtest results to InfluxDB."""
+        """Write Cloudflare speed test results to InfluxDB."""
         try:
             # Mask IP if privacy mode is enabled
-            external_ip = ip_info.get("ip", result.get("external_ip", "unknown"))
+            external_ip = ip_info.get("ip", "unknown")
             if HIDE_EXTERNAL_IP:
                 external_ip = "hidden"
 
             # Main speedtest metrics
             tags = {
-                "server_name": result.get("server_name", "unknown"),
-                "server_location": result.get("server_location", "unknown"),
-                "server_country": result.get("server_country", "unknown"),
-                "isp": ip_info.get("isp", result.get("isp", "unknown")),
+                "colo": result.get("colo", "unknown"),
+                "colo_location": result.get("colo_location", "unknown"),
+                "isp": ip_info.get("isp", "unknown"),
                 "asn": ip_info.get("asn", "unknown"),
                 "connection_type": ip_info.get("connection_type", "unknown"),
                 "external_ip": external_ip,
             }
             fields = {
-                "download_mbps": result.get("download_mbps", 0.0),
-                "upload_mbps": result.get("upload_mbps", 0.0),
-                "download_bandwidth": result.get("download_bandwidth", 0),
-                "upload_bandwidth": result.get("upload_bandwidth", 0),
-                "ping_latency": result.get("ping_latency", 0.0),
-                "ping_jitter": result.get("ping_jitter", 0.0),
-                "ping_low": result.get("ping_low", 0.0),
-                "ping_high": result.get("ping_high", 0.0),
-                "download_latency_iqm": result.get("download_latency_iqm", 0.0),
-                "upload_latency_iqm": result.get("upload_latency_iqm", 0.0),
+                "download_mbps": result.get("download_mbps") or 0.0,
+                "upload_mbps": result.get("upload_mbps") or 0.0,
+                "latency_ms": result.get("latency_ms") or 0.0,
+                "jitter_ms": result.get("jitter_ms") or 0.0,
                 "packet_loss": result.get("packet_loss") if result.get("packet_loss") is not None else 0.0,
-                "result_url": result.get("result_url", ""),
             }
-            
-            self.writer.write_point("speedtest", tags, fields)
-            
+
+            self.writer.write_point("cloudflare_speedtest", tags, fields)
+
             # Write ISP change event if detected
             if isp_change.get("changed"):
                 change_tags = {
@@ -465,21 +562,21 @@ class SpeedtestRunner:
                     "current_ip": "" if HIDE_EXTERNAL_IP else ip_info.get("ip", ""),
                     "event": 1,  # Marker for annotations
                 }
-                
+
                 self.writer.write_point("isp_change", change_tags, change_fields)
                 print(f"  ⚠️  ISP CHANGE DETECTED: {isp_change.get('previous_isp')} -> {ip_info.get('isp')}")
-            
+
             print("  Results written to InfluxDB")
-            
+
         except Exception as e:
             print(f"Error writing to InfluxDB: {e}")
-    
+
     def run_test_cycle(self):
-        """Run a complete test cycle: get IP info, run speedtest, log results."""
+        """Run a complete test cycle: get IP info, run speed test, log results."""
         print(f"\n{'='*60}")
-        print(f"[{datetime.now().isoformat()}] Starting test cycle")
+        print(f"[{datetime.now().isoformat()}] Starting Cloudflare test cycle")
         print(f"{'='*60}")
-        
+
         # Get current IP/ISP information
         ip_info = self.isp_tracker.get_ip_info()
         display_ip = "hidden" if HIDE_EXTERNAL_IP else ip_info.get("ip")
@@ -487,27 +584,27 @@ class SpeedtestRunner:
         print(f"  ISP: {ip_info.get('isp')}")
         print(f"  ASN: {ip_info.get('asn')}")
         print(f"  Connection Type: {ip_info.get('connection_type')}")
-        
+
         # Check for ISP change
         isp_change = self.isp_tracker.check_for_change(ip_info)
-        
-        # Run speedtest
+
+        # Run speed test
         result = self.run_speedtest()
-        
+
         if result:
             self.write_speedtest_result(result, ip_info, isp_change)
         else:
-            # Write at least the IP info if speedtest failed
+            # Write at least the IP info if speed test failed
             try:
                 tags = {
                     "isp": ip_info.get("isp", "unknown"),
                     "connection_type": ip_info.get("connection_type", "unknown"),
                 }
                 fields = {"error": 1}
-                self.writer.write_point("speedtest_error", tags, fields)
+                self.writer.write_point("cloudflare_speedtest_error", tags, fields)
             except Exception as e:
-                print(f"Error logging speedtest failure: {e}")
-        
+                print(f"Error logging speed test failure: {e}")
+
         print(f"[{datetime.now().isoformat()}] Test cycle complete")
 
 
@@ -516,7 +613,7 @@ def wait_for_influxdb():
     print("Waiting for InfluxDB to be ready...")
     max_retries = 30
     retry_interval = 5
-    
+
     for i in range(max_retries):
         try:
             response = requests.get(f"{INFLUXDB_URL}/health", timeout=5)
@@ -525,30 +622,31 @@ def wait_for_influxdb():
                 return True
         except Exception:
             pass
-        
+
         print(f"  Waiting... ({i+1}/{max_retries})")
         time.sleep(retry_interval)
-    
+
     print("Failed to connect to InfluxDB")
     return False
 
 
 def get_scheduler(interval: int, cron_expr: str):
     """
-    Determine scheduling mode.
+    Return a scheduling function that runs the provided job on schedule.
 
-    When cron_expr is provided, runs at times defined by the cron expression.
-    Otherwise runs every `interval` seconds.
-    Returns ("cron", cron_expr) or ("interval", interval).
+    When cron_expr is provided, runs the job at times defined by the cron
+    expression. Otherwise runs every `interval` seconds.
     """
     if cron_expr:
         try:
             from croniter import croniter
-            croniter(cron_expr)  # validate
+            # Validate the cron expression
+            croniter(cron_expr)
             return "cron", cron_expr
         except Exception as e:
             print(f"Invalid SPEEDTEST_CRON expression '{cron_expr}': {e}")
             print(f"Falling back to interval-based scheduling ({interval}s)")
+
     return "interval", interval
 
 
@@ -574,22 +672,22 @@ def run_cron_scheduler(runner, cron_expr: str):
 def main():
     """Main entry point."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(
-        description="NetPulse - Network Speed & ISP Monitor",
+        description="NetPulse - Cloudflare Enhanced Speed Test Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s                         # Run as daemon with interval-based scheduling
   %(prog)s --once                  # Run single test and exit (for systemd timer)
-  %(prog)s --interval 900          # Run every 15 minutes (daemon mode)
+  %(prog)s --interval 21600        # Run every 6 hours (daemon mode)
   %(prog)s --cron "0 3,9,15,21 * * *"  # Run at 03:00, 09:00, 15:00, 21:00 daily
         """
     )
     parser.add_argument(
         "--once", "-1",
         action="store_true",
-        help="Run a single speedtest and exit (for use with systemd timers)"
+        help="Run a single speed test and exit (for use with systemd timers)"
     )
     parser.add_argument(
         "--interval", "-i",
@@ -605,14 +703,14 @@ Examples:
              "Example: '0 3,9,15,21 * * *' runs at 03:00, 09:00, 15:00, 21:00"
     )
     args = parser.parse_args()
-    
+
     # Resolve scheduling configuration (CLI args override env vars)
     cron_expr = args.cron or SPEEDTEST_CRON
     interval = args.interval if args.interval else SPEEDTEST_INTERVAL
-    
-    print("="*60)
-    print("NetPulse - Network Speed & ISP Monitor")
-    print("="*60)
+
+    print("=" * 60)
+    print("NetPulse - Cloudflare Enhanced Speed Test Runner")
+    print("=" * 60)
     print(f"InfluxDB URL: {INFLUXDB_URL}")
     print(f"InfluxDB Org: {INFLUXDB_ORG}")
     print(f"InfluxDB Bucket: {INFLUXDB_BUCKET}")
@@ -622,33 +720,34 @@ Examples:
     elif cron_expr:
         print(f"Mode: Cron schedule ({cron_expr})")
     else:
-        print(f"Test Interval: {interval} seconds ({interval/60:.1f} minutes)")
-    print("="*60)
-    
+        print(f"Mode: Interval ({interval}s / {interval/3600:.1f}h)")
+    print("=" * 60)
+
     # Wait for InfluxDB
     if not wait_for_influxdb():
         return
-    
+
     # Create runner
-    runner = SpeedtestRunner()
-    
+    runner = CloudflareSpeedtestRunner()
+
     # Run initial test
     runner.run_test_cycle()
-    
+
     # If --once flag, exit after single run
     if args.once:
         print("Single run completed. Exiting.")
         return
-    
+
     # Schedule periodic tests
     sched_type, sched_value = get_scheduler(interval, cron_expr)
 
     if sched_type == "cron":
         run_cron_scheduler(runner, sched_value)
     else:
-        schedule.every(sched_value).seconds.do(runner.run_test_cycle)
+        import schedule as sched
+        sched.every(sched_value).seconds.do(runner.run_test_cycle)
         while True:
-            schedule.run_pending()
+            sched.run_pending()
             time.sleep(1)
 
 
