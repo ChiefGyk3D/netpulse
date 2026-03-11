@@ -39,6 +39,7 @@ services:
     networks:
       - netpulse-network
 
+  # ─── Simplified runner: Ookla-based speed test (always runs) ──────────────
   speedtest-runner:
     build:
       context: ./speedtest-runner
@@ -59,8 +60,48 @@ services:
       # - INFLUXDB_DATABASE=${INFLUXDB_DATABASE:-netpulse}
       # General settings
       - SPEEDTEST_INTERVAL=${SPEEDTEST_INTERVAL:-1800}
+      - SPEEDTEST_CRON=${SPEEDTEST_CRON:-}
+      - HIDE_EXTERNAL_IP=${HIDE_EXTERNAL_IP:-false}
       - TZ=${TZ:-America/New_York}
       - NETPULSE_STATE_FILE=/data/state.json
+    volumes:
+      - netpulse-state:/data
+    depends_on:
+      - influxdb
+    networks:
+      - netpulse-network
+
+  # ─── Enhanced runner: Cloudflare-based speed test (opt-in via profile) ─────
+  cloudflare-runner:
+    build:
+      context: ./cloudflare-speedtest-runner
+      dockerfile: Dockerfile
+    container_name: netpulse-cloudflare-runner
+    restart: unless-stopped
+    profiles:
+      - enhanced
+    environment:
+      # InfluxDB version: "1" or "2" (default: 2)
+      - INFLUXDB_VERSION=${INFLUXDB_VERSION:-2}
+      - INFLUXDB_URL=http://influxdb:8086
+      # InfluxDB 2.x settings (token-based)
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-netpulse-token-change-me}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-netpulse}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-netpulse}
+      # InfluxDB 1.x settings (username/password) - uncomment if using v1
+      # - INFLUXDB_USERNAME=${INFLUXDB_USERNAME:-admin}
+      # - INFLUXDB_PASSWORD=${INFLUXDB_PASSWORD:-netpulse123}
+      # - INFLUXDB_DATABASE=${INFLUXDB_DATABASE:-netpulse}
+      # Scheduling: interval (seconds) or cron expression
+      # Default: every 6 hours.  Clock-based example: "0 3,9,15,21 * * *"
+      - SPEEDTEST_INTERVAL=${CF_SPEEDTEST_INTERVAL:-21600}
+      - SPEEDTEST_CRON=${CF_SPEEDTEST_CRON:-}
+      # Privacy: set to "true" to mask the external IP in InfluxDB/Grafana
+      - HIDE_EXTERNAL_IP=${HIDE_EXTERNAL_IP:-false}
+      - TZ=${TZ:-America/New_York}
+      - NETPULSE_STATE_FILE=/data/cf_state.json
+      # Cloudflare test tuning
+      - CF_LATENCY_SAMPLES=${CF_LATENCY_SAMPLES:-20}
     volumes:
       - netpulse-state:/data
     depends_on:
