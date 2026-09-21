@@ -17,7 +17,14 @@ RUN curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/scr
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and setuptools in the same layer, then remove pip itself:
+# Trivy's setuptools (CVE-2025-47273, CVE-2026-59890) and msgpack
+# (GHSA-6v7p-g79w-8964) findings come from pip's own vendored copies under
+# pip/_vendor, which no upgrade of the real packages touches. Nothing at
+# runtime invokes pip (CMD is the runner), so the image does not need it.
+RUN pip install --no-cache-dir --upgrade pip setuptools \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y pip
 
 # Copy application
 COPY speedtest_runner.py .
