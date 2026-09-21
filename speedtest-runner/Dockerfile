@@ -23,7 +23,7 @@ COPY requirements.txt .
 # pip/_vendor, which no upgrade of the real packages touches. Nothing at
 # runtime invokes pip (CMD is the runner), so the image does not need it.
 RUN pip install --no-cache-dir --upgrade pip setuptools \
-    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --require-hashes -r requirements.txt \
     && pip uninstall -y pip
 
 # Copy application
