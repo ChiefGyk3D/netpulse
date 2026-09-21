@@ -11,12 +11,10 @@ import json
 import os
 import subprocess
 import time
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
 
 import requests
 import schedule
-
 
 # Configuration from environment
 INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
@@ -39,13 +37,13 @@ class ISPTracker:
     """Tracks ISP information and detects changes with persistent state."""
     
     # State file location - works for both local and Docker
-    STATE_FILE = os.getenv("NETPULSE_STATE_FILE", "/tmp/netpulse_state.json")
+    STATE_FILE = os.getenv("NETPULSE_STATE_FILE", "/tmp/netpulse_state.json")  # noqa: S108  # persisted state, not a temp file; every deployment overrides it
     
     def __init__(self):
-        self.last_ip: Optional[str] = None
-        self.last_isp: Optional[str] = None
-        self.last_asn: Optional[str] = None
-        self.last_connection_type: Optional[str] = None
+        self.last_ip: str | None = None
+        self.last_isp: str | None = None
+        self.last_asn: str | None = None
+        self.last_connection_type: str | None = None
         
         # Load persisted state from file
         self._load_state()
@@ -61,7 +59,7 @@ class ISPTracker:
                     self.last_asn = state.get("asn")
                     self.last_connection_type = state.get("connection_type")
                     print(f"Loaded previous state: IP={self.last_ip}, ISP={self.last_isp}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # a bad state file must not stop the run; error is logged
             print(f"Could not load previous state: {e}")
     
     def _save_state(self):
@@ -72,11 +70,11 @@ class ISPTracker:
                 "isp": self.last_isp,
                 "asn": self.last_asn,
                 "connection_type": self.last_connection_type,
-                "updated_at": datetime.now().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }
             with open(self.STATE_FILE, 'w') as f:
                 json.dump(state, f)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # state is best-effort; error is logged
             print(f"Could not save state: {e}")
     
     def get_ip_info(self) -> dict:
@@ -114,7 +112,7 @@ class ISPTracker:
                     ip_info["isp"] = parts[1] if len(parts) > 1 else org
                 else:
                     ip_info["isp"] = org
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # keep the daemon alive and fall through to ip-api; error is logged
             print(f"Error fetching from ipinfo.io: {e}")
         
         # Fallback to ip-api.com if ipinfo.io failed
@@ -130,7 +128,7 @@ class ISPTracker:
                     ip_info["city"] = data.get("city")
                     ip_info["region"] = data.get("regionName")
                     ip_info["country"] = data.get("countryCode")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
                 print(f"Error fetching from ip-api.com: {e}")
         
         # Infer connection type based on ISP name keywords
@@ -205,7 +203,6 @@ class InfluxDBWriter:
     
     def close(self):
         """Close the connection."""
-        pass
 
 
 class InfluxDB2Writer(InfluxDBWriter):
@@ -241,10 +238,10 @@ class InfluxDB1Writer(InfluxDBWriter):
     """Writer for InfluxDB 1.x using username/password authentication."""
     
     def __init__(self, url: str, username: str, password: str, database: str):
-        from influxdb import InfluxDBClient as InfluxDB1Client
-        
         # Parse URL to get host and port
         from urllib.parse import urlparse
+
+        from influxdb import InfluxDBClient as InfluxDB1Client
         parsed = urlparse(url)
         host = parsed.hostname or "localhost"
         port = parsed.port or 8086
@@ -263,8 +260,8 @@ class InfluxDB1Writer(InfluxDBWriter):
         # Create database if it doesn't exist
         try:
             self.client.create_database(database)
-        except Exception:
-            pass  # Database might already exist
+        except Exception as e:  # noqa: BLE001  # the database usually already exists; error is logged
+            print(f"Could not create database {database!r}: {e}")
         
         print(f"Connected to InfluxDB 1.x at {host}:{port} (database: {database})")
     
@@ -322,16 +319,17 @@ class SpeedtestRunner:
             try:
                 # Accept the license by running with --accept-license
                 subprocess.run(
-                    ["speedtest", "--accept-license", "--accept-gdpr"],
+                    ["speedtest", "--accept-license", "--accept-gdpr"],  # noqa: S607  # resolved on PATH; setup.sh installs it via apt, dnf or pacman, so the location varies
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=30,
+                    check=False,
                 )
                 self.speedtest_accepted_license = True
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
                 print(f"Error accepting speedtest license: {e}")
     
-    def run_speedtest(self) -> Optional[dict]:
+    def run_speedtest(self) -> dict | None:
         """
         Run speedtest using Ookla's official CLI.
         Returns parsed results or None if failed.
@@ -339,12 +337,13 @@ class SpeedtestRunner:
         self.accept_speedtest_license()
         
         try:
-            print(f"[{datetime.now().isoformat()}] Starting speedtest...")
+            print(f"[{datetime.now().isoformat()}] Starting speedtest...")  # noqa: DTZ005  # local wall-clock for log line
             result = subprocess.run(
-                ["speedtest", "--format=json", "--accept-license", "--accept-gdpr"],
+                ["speedtest", "--format=json", "--accept-license", "--accept-gdpr"],  # noqa: S607  # resolved on PATH; setup.sh installs it via apt, dnf or pacman, so the location varies
                 capture_output=True,
                 text=True,
-                timeout=120  # 2 minute timeout
+                timeout=120,  # 2 minute timeout
+                check=False,  # returncode is inspected below
             )
             
             if result.returncode != 0:
@@ -404,7 +403,7 @@ class SpeedtestRunner:
         except json.JSONDecodeError as e:
             print(f"Failed to parse speedtest output: {e}")
             return None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
             print(f"Error running speedtest: {e}")
             return None
     
@@ -460,15 +459,15 @@ class SpeedtestRunner:
                 self.writer.write_point("isp_change", change_tags, change_fields)
                 print(f"  ⚠️  ISP CHANGE DETECTED: {isp_change.get('previous_isp')} -> {ip_info.get('isp')}")
             
-            print(f"  Results written to InfluxDB")
+            print("  Results written to InfluxDB")
             
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
             print(f"Error writing to InfluxDB: {e}")
     
     def run_test_cycle(self):
         """Run a complete test cycle: get IP info, run speedtest, log results."""
         print(f"\n{'='*60}")
-        print(f"[{datetime.now().isoformat()}] Starting test cycle")
+        print(f"[{datetime.now().isoformat()}] Starting test cycle")  # noqa: DTZ005  # local wall-clock for log line
         print(f"{'='*60}")
         
         # Get current IP/ISP information
@@ -495,10 +494,10 @@ class SpeedtestRunner:
                 }
                 fields = {"error": 1}
                 self.writer.write_point("speedtest_error", tags, fields)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
                 print(f"Error logging speedtest failure: {e}")
         
-        print(f"[{datetime.now().isoformat()}] Test cycle complete")
+        print(f"[{datetime.now().isoformat()}] Test cycle complete")  # noqa: DTZ005  # local wall-clock for log line
         print(f"Next test in {SPEEDTEST_INTERVAL} seconds ({SPEEDTEST_INTERVAL/60:.1f} minutes)")
 
 
@@ -514,8 +513,8 @@ def wait_for_influxdb():
             if response.status_code == 200:
                 print("InfluxDB is ready!")
                 return True
-        except Exception:
-            pass
+        except requests.RequestException:
+            pass  # not up yet; the retry line below reports progress
         
         print(f"  Waiting... ({i+1}/{max_retries})")
         time.sleep(retry_interval)

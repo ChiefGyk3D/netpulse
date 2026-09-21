@@ -41,7 +41,6 @@ jobs:
       lint-command: ruff check speedtest-runner/ --output-format=github
       # Lint was advisory before the migration and stays so until the tree is
       # clean; then delete this line and let it gate.
-      lint-continue-on-error: true
       dockerfile: speedtest-runner/Dockerfile
       docker-context: speedtest-runner
       docker-test-command: docker run --rm "$IMAGE" python -c "import speedtest_runner; print('Import successful')"
