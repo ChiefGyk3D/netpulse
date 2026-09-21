@@ -39,8 +39,6 @@ jobs:
       # this with pytest when tests land, and turn on `codecov`.
       test-command: python -m compileall -q speedtest-runner
       lint-command: ruff check speedtest-runner/ --output-format=github
-      # Lint was advisory before the migration and stays so until the tree is
-      # clean; then delete this line and let it gate.
       dockerfile: speedtest-runner/Dockerfile
       docker-context: speedtest-runner
       docker-test-command: docker run --rm "$IMAGE" python -c "import speedtest_runner; print('Import successful')"
