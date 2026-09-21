@@ -31,7 +31,7 @@ jobs:
       lint-python-version: "3.14"
       install-command: |
         python -m pip install --upgrade pip
-        pip install -r speedtest-runner/requirements.txt
+        pip install --require-hashes -r speedtest-runner/requirements.txt
       # There is no test suite yet. The old workflow ran pytest against a
       # tests/ directory that does not exist and hid that behind
       # `|| echo "No tests found"`. A byte-compile of the runner on every
