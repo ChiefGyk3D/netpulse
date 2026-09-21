@@ -1,0 +1,11 @@
+# gitleaks configuration for the Security workflow (git-your-ship-together).
+#
+# Extends the default ruleset without disabling any rule. The first
+# full-history scan (2026-09-21, every commit) found nothing, so there is
+# nothing to allowlist. If a documented placeholder ever trips a generic
+# detector, add it here as an anchored whole-match regex on the secret
+# (regexTarget = "secret"), never as a path, so a real leak still fails the
+# job.
+
+[extend]
+useDefault = true

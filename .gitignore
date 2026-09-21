@@ -30,3 +30,6 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Scanner output is a CI artifact, never a committed file
+*.sarif
