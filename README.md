@@ -131,6 +131,17 @@ sudo systemctl start netpulse.timer
 sudo ./setup.sh --uninstall
 ```
 
+## Python dependencies
+
+The runner's direct dependencies are in `speedtest-runner/requirements.in`;
+`speedtest-runner/requirements.txt` is generated from it and pins every
+dependency, transitive ones included, to a version and its SHA-256 hashes.
+pip enters hash-checking mode by itself when it reads the file, so the
+Docker image (`pip install --require-hashes`) and CI verify every download.
+To add or bump a dependency, edit `requirements.in` and regenerate the lock
+with the command in its header; never edit `requirements.txt` by hand.
+Dependabot regenerates it for version bumps.
+
 ## Configuration
 
 ### InfluxDB Version Support
