@@ -17,7 +17,10 @@ RUN curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/scr
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and setuptools in the same layer: the base image ships a
+# setuptools that Trivy flags (CVE-2025-47273, CVE-2026-59890).
+RUN pip install --no-cache-dir --upgrade pip setuptools \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY speedtest_runner.py .
