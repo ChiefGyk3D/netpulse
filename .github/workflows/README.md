@@ -1,102 +1,95 @@
 # GitHub Actions Workflows
 
-This directory contains automated CI/CD workflows for NetPulse.
+Three thin callers. The jobs themselves live in
+[ChiefGyk3D/git-your-ship-together](https://github.com/ChiefGyk3D/git-your-ship-together),
+shared with Typo Sniper, Stream Daemon, Star Daemon and Boon Tube Daemon, so a
+pipeline fix or a new scan step lands once. Each file here says only what is
+specific to NetPulse: Python versions, the check command, the Dockerfile path
+and build context, the Doppler project.
 
-## 📋 Workflows Overview
+| Workflow | Triggers | Calls | What it does |
+|---|---|---|---|
+| `ci.yml` | push to main/develop/copilot/**, PRs, manual | `python-ci.yml` | Lint (ruff), a byte-compile of `speedtest-runner/` on Python 3.10–3.14, Docker build with an import check, one `CI green` gate job for branch protection |
+| `release.yml` | push to main, `v*.*.*` tags, PRs, weekly, manual | `python-docker-release.yml` | Build and test on every PR; on main and tags publish a multi-arch (amd64 + arm64) image to `ghcr.io/chiefgyk3d/netpulse`, signed with cosign, with a syft SBOM attached and SLSA provenance recorded; Trivy scan to the Security tab |
+| `security.yml` | push to main/develop, PRs, weekly, manual | `security.yml` | CodeQL, gitleaks over the full history, pip-audit, dependency review on PRs, Snyk |
 
-### 🧪 CI - Tests (`ci-tests.yml`)
-**Triggers:** Push to main/develop/copilot branches, PRs, manual dispatch
+## Secrets: Doppler, not GitHub
 
-**What it does:**
-- Tests on Python 3.10, 3.11, 3.12, and 3.13
-- Runs full pytest suite with coverage
-- Uploads coverage to Codecov
-- Runs security scanning (Bandit)
-- Lints code with Ruff
-- Checks for known vulnerabilities (Safety)
+No secret is stored in this repository's GitHub secrets. A job authenticates
+to Doppler with a short-lived token minted from its own GitHub OIDC identity
+(a Doppler Service Account Identity) and reads the `ci` config of the
+`netpulse` project, which holds only what the pipelines need:
 
-**Required Secrets:**
-- `CODECOV_TOKEN` (optional, for coverage reports)
+| Name | Used by |
+|---|---|
+| `SNYK_TOKEN` | `security.yml`, Snyk |
 
----
+Nothing else is needed today: the image goes to GHCR with the job's own
+`GITHUB_TOKEN` (Docker Hub publishing is off, as it always was), and there is
+no coverage to upload to Codecov until a test suite exists.
 
-### 🔍 Dependency Scanning
+The one per-repository setting is the **repository variable**
+`DOPPLER_IDENTITY_ID` (Settings → Secrets and variables → Actions →
+Variables), the UUID of the identity. It is an identifier, not a secret.
 
-#### Dependency Review (`dependency-review.yml`)
-**Triggers:** PRs to main/develop
+Before that is set the pipelines still run: Snyk warns and skips, and GHCR
+publishing works regardless.
 
-**What it does:**
-- Reviews dependency changes in PRs
-- Detects new vulnerabilities
-- Checks license compatibility
-- Posts summary in PR comments
+The setup runbook, the fallback path (a Doppler Service Token as the single
+GitHub secret `DOPPLER_TOKEN`), and every input are documented in the
+git-your-ship-together README.
 
-#### Dependency Vulnerability Scan (`dependency-scan.yml`)
-**Triggers:** All pushes, PRs, manual dispatch
+## Verifying a published image
 
-**What it does:**
-- Scans with Safety (curated vulnerability DB)
-- Scans with pip-audit (OSV database)
-- Uploads reports as artifacts
+```sh
+cosign verify ghcr.io/chiefgyk3d/netpulse:latest \
+  --certificate-identity-regexp '^https://github.com/ChiefGyk3D/git-your-ship-together/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-#### Snyk Security Scanning (`snyk-security.yml`)
-**Triggers:** PRs, weekly (Mondays), manual dispatch
-
-**What it does:**
-- Snyk Code (SAST): Static application security testing
-- Snyk Open Source (SCA): Dependency vulnerability scanning
-- Uploads results to GitHub Security tab
-
-**Required Secrets:**
-- `SNYK_TOKEN` (required for Snyk scanning)
-
----
-
-### 🔐 CodeQL Analysis (`codeql-analysis.yml`)
-**Triggers:** Push to main/develop, PRs, weekly (Sundays), manual dispatch
-
-**What it does:**
-- Static code analysis for security vulnerabilities
-- Detects common vulnerability patterns
-- Results appear in GitHub Security > Code Scanning
-
----
-
-### 🐳 Docker Build & Publish (`docker-build-publish.yml`)
-**Triggers:** Push to main, version tags (v*.*.*), PRs, manual dispatch
-
-**What it does:**
-- Builds multi-architecture images (amd64, arm64)
-- Scans for vulnerabilities with Trivy
-- Publishes to GitHub Container Registry (ghcr.io)
-- Creates versioned tags and 'latest' tag
-
-**Published Image:** `ghcr.io/chiefgyk3d/netpulse`
-
-**Pull Command:**
-```bash
-docker pull ghcr.io/chiefgyk3d/netpulse:latest
+gh attestation verify oci://ghcr.io/chiefgyk3d/netpulse:latest --owner ChiefGyk3D
 ```
 
----
+The SBOM is also attached to every run of `release.yml` as the
+`sbom.spdx.json` artifact.
 
-## 🔧 Required Repository Secrets
+## Image tags
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `CODECOV_TOKEN` | Optional | Codecov upload token for coverage reports |
-| `SNYK_TOKEN` | Required* | Snyk API token for security scanning |
+- `latest` (main branch only)
+- `1.2.3`, `1.2`, `1` (from `v1.2.3` tags)
+- `main`, `sha-<short>` (branch and commit)
+- `pr-123` (pull requests; built and tested, never pushed)
 
-*Snyk workflow will skip gracefully if token is not configured.
+## Dependabot
 
----
+`dependabot.yml` opens weekly PRs for the Python packages in
+`speedtest-runner/requirements.txt`, the base image in
+`speedtest-runner/Dockerfile` and GitHub Actions, each with a seven-day
+cooldown on new releases.
 
-## 📦 Dependabot Configuration
+## Status badges
 
-The `dependabot.yml` file configures automatic dependency updates:
+```markdown
+[![CI](https://github.com/ChiefGyk3D/netpulse/actions/workflows/ci.yml/badge.svg)](https://github.com/ChiefGyk3D/netpulse/actions/workflows/ci.yml)
+[![Release](https://github.com/ChiefGyk3D/netpulse/actions/workflows/release.yml/badge.svg)](https://github.com/ChiefGyk3D/netpulse/actions/workflows/release.yml)
+[![Security](https://github.com/ChiefGyk3D/netpulse/actions/workflows/security.yml/badge.svg)](https://github.com/ChiefGyk3D/netpulse/actions/workflows/security.yml)
+```
 
-- **Python (pip):** Weekly updates for `speedtest-runner/requirements.txt`
-- **Docker:** Weekly updates for `speedtest-runner/Dockerfile`
-- **GitHub Actions:** Weekly updates for all workflows
+## What changed in the migration
 
-Updates are scheduled for Mondays at 09:00 UTC.
+- `ci-tests.yml`, `docker-build-publish.yml`, `codeql-analysis.yml`,
+  `dependency-review.yml`, `dependency-scan.yml` and `snyk-security.yml` were
+  replaced by the three callers above.
+- The test step is honest now. The old one ran `pytest tests/` against a
+  directory that does not exist and hid the result behind
+  `|| echo "No tests found - skipping"`; the new one byte-compiles
+  `speedtest-runner/` on every Python in the matrix. Replace it with pytest
+  and turn on `codecov` when a test suite lands.
+- Bandit and `safety check` were dropped: `safety check` is deprecated
+  upstream and needs an account, and both ran as advisory-only. CodeQL and
+  ruff's `S` rules cover SAST and pip-audit covers the advisory database.
+- pip-audit gates. Ruff lint stays advisory (`lint-continue-on-error`) until
+  the tree is clean; delete that line to make it gate.
+- `.gitleaks.toml` extends the default ruleset; the full-history scan found
+  nothing, so it allowlists nothing.
+- Images are now signed, carry an SBOM and provenance, and a publishing build
+  never reads the GitHub Actions cache.
