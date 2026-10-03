@@ -118,7 +118,7 @@ class ISPTracker:
         # Fallback to ip-api.com if ipinfo.io failed
         if not ip_info["ip"]:
             try:
-                response = requests.get("http://ip-api.com/json", timeout=10)
+                response = requests.get("http://ip-api.com/json", timeout=10)  # nosemgrep: python.lang.security.audit.insecure-transport.requests.request-with-http.request-with-http  # ip-api.com free tier is http-only (https returns 403), public geo lookup, no credentials sent
                 if response.status_code == 200:
                     data = response.json()
                     ip_info["ip"] = data.get("query")
