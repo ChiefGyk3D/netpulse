@@ -7,8 +7,10 @@ WORKDIR /app
 # pipefail so a failed download in the piped install below fails the build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Install speedtest-cli and system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install speedtest-cli and system dependencies. `apt-get upgrade` applies pending
+# Debian security updates (the base image lags them, and the image scan fails on
+# any fixed HIGH finding such as libpcre2).
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates=20250419 \
     curl=8.14.1-2+deb13u5 \
     gnupg=2.4.7-21+deb13u1 \
