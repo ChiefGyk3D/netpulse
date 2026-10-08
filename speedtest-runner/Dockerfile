@@ -10,16 +10,24 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Install speedtest-cli and system dependencies. `apt-get upgrade` applies pending
 # Debian security updates (the base image lags them, and the image scan fails on
 # any fixed HIGH finding such as libpcre2).
+# Apt versions are left unpinned on purpose: the base image is pinned by digest,
+# and Debian removes superseded package versions, so exact apt pins would break
+# the build at every security update.
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    ca-certificates=20250419 \
-    curl=8.14.1-2+deb13u5 \
-    gnupg=2.4.7-21+deb13u1 \
-    apt-transport-https=3.0.3 \
+    ca-certificates \
+    curl \
+    gnupg \
+    apt-transport-https \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Ookla Speedtest CLI (official)
+# Apt versions are left unpinned on purpose: the base image is pinned by digest,
+# and Debian removes superseded package versions, so exact apt pins would break
+# the build at every security update.
+# hadolint ignore=DL3008
 RUN curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash \
-    && apt-get install -y --no-install-recommends speedtest=1.2.0.84-1.ea6b6773cf \
+    && apt-get install -y --no-install-recommends speedtest \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
