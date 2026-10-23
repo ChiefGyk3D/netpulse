@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-import check_config  # noqa: E402
+import check_config
 
 FILES = [
     "docker-compose.yml",

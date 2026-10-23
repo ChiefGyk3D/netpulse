@@ -18,8 +18,8 @@ EXPECTED = "netpulse"
 
 COMPOSE_RE = re.compile(r"\$\{INFLUXDB_(ORG|BUCKET):-([^}]*)\}")
 DATASOURCE_RE = {
-    "ORG": re.compile(r"^\s*organization:\s*(\S+)\s*$", re.M),
-    "BUCKET": re.compile(r"^\s*defaultBucket:\s*(\S+)\s*$", re.M),
+    "ORG": re.compile(r"^\s*organization:\s*(\S+)\s*$", re.MULTILINE),
+    "BUCKET": re.compile(r"^\s*defaultBucket:\s*(\S+)\s*$", re.MULTILINE),
 }
 RUNNER_RE = {
     "ORG": re.compile(r'getenv\("INFLUXDB_ORG",\s*"([^"]*)"\)'),
