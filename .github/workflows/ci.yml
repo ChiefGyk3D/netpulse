@@ -38,9 +38,11 @@ jobs:
       # There is no test suite yet. The old workflow ran pytest against a
       # tests/ directory that does not exist and hid that behind
       # `|| echo "No tests found"`. A byte-compile of the runner on every
-      # Python in the matrix is what can honestly be checked today; replace
+      # Python in the matrix is what can honestly be checked today, plus a config
+      # check that the InfluxDB org and bucket agree across compose, Grafana and
+      # the dashboard (scripts/check_config.py); replace
       # this with pytest when tests land, and turn on `codecov`.
-      test-command: python -m compileall -q speedtest-runner
+      test-command: python -m compileall -q speedtest-runner && python scripts/check_config.py && python -m unittest discover -s tests
       lint-command: ruff check speedtest-runner/ --output-format=github
       dockerfile: speedtest-runner/Dockerfile
       docker-context: speedtest-runner

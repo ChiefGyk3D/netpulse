@@ -295,7 +295,7 @@ InfluxDB stores data indefinitely by default. To configure retention:
 
 1. Access InfluxDB at http://localhost:8086
 2. Log in with your credentials
-3. Go to Data > Buckets > speedtest
+3. Go to Data > Buckets > netpulse
 4. Set your desired retention period
 
 ## Extending
@@ -314,4 +314,4 @@ Edit `speedtest_runner.py` and modify the `get_ip_info()` method to add your ISP
 
 ## License
 
-Mozilla Public License 2.0 - Feel free to use and modify!
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
