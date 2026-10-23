@@ -16,7 +16,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXPECTED = "netpulse"
 
-COMPOSE_RE = re.compile(r"\$\{INFLUXDB_(ORG|BUCKET):-([^}]*)\}")
+# One environment entry: "- NAME=value", "NAME=value" or "NAME: value"; commented
+# lines never match. The value may be a literal, ${VAR:-default} or ${VAR-default}.
+ENV_LINE = r"^\s*(?:-\s*)?{name}\s*[=:]\s*[\"']?(?P<value>[^\"'\s#]*)[\"']?\s*(?:#.*)?$"
+EXPAND_RE = re.compile(r"^\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)(?P<op>:-|-)(?P<default>[^}]*)\}$")
 DATASOURCE_RE = {
     "ORG": re.compile(r"^\s*organization:\s*(\S+)\s*$", re.MULTILINE),
     "BUCKET": re.compile(r"^\s*defaultBucket:\s*(\S+)\s*$", re.MULTILINE),
@@ -25,20 +28,37 @@ RUNNER_RE = {
     "ORG": re.compile(r'getenv\("INFLUXDB_ORG",\s*"([^"]*)"\)'),
     "BUCKET": re.compile(r'getenv\("INFLUXDB_BUCKET",\s*"([^"]*)"\)'),
 }
-FLUX_BUCKET_RE = re.compile(r'from\(bucket:\s*"([^"]*)"')
+# group 1 is the literal bucket name; None when the bucket is not a string literal.
+FLUX_ANY_BUCKET_RE = re.compile(r'from\(\s*bucket:\s*(?:"([^"]*)"|)')
 
 
-def walk_queries(node):
-    """Yield every string stored under a 'query' key, at any depth."""
+def walk_queries(node, path="$"):
+    """Yield (path, query) for every string stored under a 'query' key."""
     if isinstance(node, dict):
         for key, value in node.items():
             if key == "query" and isinstance(value, str):
-                yield value
+                yield f"{path}.{key}", value
             else:
-                yield from walk_queries(value)
+                yield from walk_queries(value, f"{path}.{key}")
     elif isinstance(node, list):
-        for item in node:
-            yield from walk_queries(item)
+        for i, item in enumerate(node):
+            yield from walk_queries(item, f"{path}[{i}]")
+
+
+def effective_values(compose: str, name: str) -> list[str]:
+    """Effective default/literal of each uncommented `name` entry, or an error marker."""
+    out = []
+    pattern = re.compile(ENV_LINE.format(name=re.escape(name)), re.MULTILINE)
+    for m in pattern.finditer(compose):
+        value = m.group("value")
+        if value.startswith("${"):
+            e = EXPAND_RE.match(value)
+            if not e:
+                out.append(f"<no default in {value}>")
+                continue
+            value = e.group("default")
+        out.append(value)
+    return out
 
 
 def check(root: Path) -> list[str]:
@@ -53,27 +73,38 @@ def check(root: Path) -> list[str]:
 
     compose = (root / "docker-compose.yml").read_text()
     for kind in ("ORG", "BUCKET"):
-        found(
-            f"docker-compose.yml INFLUXDB_{kind}",
-            [m.group(2) for m in COMPOSE_RE.finditer(compose) if m.group(1) == kind],
-        )
+        for label, name in (
+            (f"docker-compose.yml DOCKER_INFLUXDB_INIT_{kind}", f"DOCKER_INFLUXDB_INIT_{kind}"),
+            (f"docker-compose.yml runner INFLUXDB_{kind}", f"INFLUXDB_{kind}"),
+        ):
+            values = effective_values(compose, name)
+            if not values:
+                errors.append(f"{label}: line missing from docker-compose.yml")
+            found(label, values)
     datasource = (root / "grafana/provisioning/datasources/influxdb.yml").read_text()
     runner = (root / "speedtest-runner/speedtest_runner.py").read_text()
     for kind in ("ORG", "BUCKET"):
         found(f"datasource {kind}", DATASOURCE_RE[kind].findall(datasource))
         found(f"runner default {kind}", RUNNER_RE[kind].findall(runner))
 
-    dashboards = sorted((root / "grafana/dashboards").glob("*.json"))
+    dashboards = sorted((root / "grafana/dashboards").rglob("*.json"))
     if not dashboards:
         errors.append("no dashboards found (check is blind)")
     for path in dashboards:
+        name = path.relative_to(root / "grafana/dashboards").as_posix()
         try:
             data = json.loads(path.read_text())
         except json.JSONDecodeError as exc:
-            errors.append(f"{path.name}: invalid JSON: {exc}")
+            errors.append(f"{name}: invalid JSON: {exc}")
             continue
-        buckets = [b for q in walk_queries(data) for b in FLUX_BUCKET_RE.findall(q)]
-        found(f"{path.name} from(bucket:)", buckets)
+        buckets = []
+        for where, query in walk_queries(data):
+            for m in FLUX_ANY_BUCKET_RE.finditer(query):
+                if m.group(1) is None:
+                    errors.append(f"{name} {where}: bucket is not a literal (from(bucket:) must name a string)")
+                else:
+                    buckets.append(m.group(1))
+        found(f"{name} from(bucket:)", buckets)
     return errors
 
 

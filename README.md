@@ -94,6 +94,18 @@ Open http://localhost:3000 in your browser.
 
 The "Speedtest Dashboard" will be auto-provisioned and ready to use!
 
+### Upgrading
+
+NetPulse now names the InfluxDB organization and bucket `netpulse` everywhere (compose defaults, runner, Grafana datasource, dashboards). InfluxDB applies its `DOCKER_INFLUXDB_INIT_*` variables only on the first start with an empty data volume, so an existing install keeps the org and bucket it was created with.
+
+If your install was initialised with the old default, its org **and** bucket are both named `speedtest`. Pick one:
+
+- Keep them: set `INFLUXDB_ORG=speedtest` and `INFLUXDB_BUCKET=speedtest` in `.env`, and make the Grafana datasource (`organization`, `defaultBucket`) and the dashboard queries match.
+- Switch to the new names: create a `netpulse` org and bucket in InfluxDB, then update the datasource to match.
+- Migrate: copy the data from the `speedtest` bucket into a new `netpulse` bucket with `influx` or the InfluxDB UI.
+
+If your `.env` already sets `INFLUXDB_ORG` and `INFLUXDB_BUCKET`, the dashboard now reads the `netpulse` bucket, so that bucket must exist. New installs need nothing.
+
 ## Installation Methods
 
 ### Systemd Timer vs Docker Daemon
