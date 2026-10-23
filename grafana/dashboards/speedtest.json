@@ -11,7 +11,7 @@
         "hide": false,
         "iconColor": "rgba(255, 96, 96, 1)",
         "name": "ISP Changes",
-        "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"isp_change\")\n  |> filter(fn: (r) => r._field == \"event\")",
+        "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"isp_change\")\n  |> filter(fn: (r) => r._field == \"event\")",
         "textFormat": "ISP Change: {{previous_isp}} → {{current_isp}}",
         "titleFormat": "ISP Failover"
       }
@@ -97,7 +97,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> last()",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> last()",
           "refId": "A"
         }
       ],
@@ -164,7 +164,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"upload_mbps\")\n  |> last()",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"upload_mbps\")\n  |> last()",
           "refId": "A"
         }
       ],
@@ -231,7 +231,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_latency\")\n  |> last()",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_latency\")\n  |> last()",
           "refId": "A"
         }
       ],
@@ -298,7 +298,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_jitter\")\n  |> last()",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_jitter\")\n  |> last()",
           "refId": "A"
         }
       ],
@@ -365,7 +365,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> last()",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> last()",
           "refId": "A"
         }
       ],
@@ -449,7 +449,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> last()\n  |> keep(columns: [\"connection_type\"])",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: -24h)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> last()\n  |> keep(columns: [\"connection_type\"])",
           "refId": "A"
         }
       ],
@@ -585,7 +585,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> map(fn: (r) => ({ r with _value: r._value, isp: r.isp, connection_type: r.connection_type }))",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> map(fn: (r) => ({ r with _value: r._value, isp: r.isp, connection_type: r.connection_type }))",
           "refId": "Download",
           "hide": false
         },
@@ -594,7 +594,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"upload_mbps\")",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"upload_mbps\")",
           "refId": "Upload",
           "hide": false
         }
@@ -730,7 +730,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_latency\")",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_latency\")",
           "refId": "Latency"
         },
         {
@@ -738,7 +738,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_jitter\")",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_jitter\")",
           "refId": "Jitter"
         }
       ],
@@ -828,7 +828,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")",
           "refId": "A"
         }
       ],
@@ -953,7 +953,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"isp_change\")\n  |> pivot(rowKey:[\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> keep(columns: [\"_time\", \"previous_isp\", \"current_isp\", \"previous_ip\", \"current_ip\", \"previous_connection_type\", \"current_connection_type\", \"isp_changed\"])\n  |> rename(columns: {_time: \"Time\", previous_isp: \"Previous ISP\", current_isp: \"Current ISP\", previous_ip: \"Previous IP\", current_ip: \"Current IP\", previous_connection_type: \"Previous Type\", current_connection_type: \"Current Type\"})",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"isp_change\")\n  |> pivot(rowKey:[\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> keep(columns: [\"_time\", \"previous_isp\", \"current_isp\", \"previous_ip\", \"current_ip\", \"previous_connection_type\", \"current_connection_type\", \"isp_changed\"])\n  |> rename(columns: {_time: \"Time\", previous_isp: \"Previous ISP\", current_isp: \"Current ISP\", previous_ip: \"Previous IP\", current_ip: \"Current IP\", previous_connection_type: \"Previous Type\", current_connection_type: \"Current Type\"})",
           "refId": "A"
         }
       ],
@@ -1049,7 +1049,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> group(columns: [\"connection_type\"])\n  |> count()",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> group(columns: [\"connection_type\"])\n  |> count()",
           "refId": "A"
         }
       ],
@@ -1114,7 +1114,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> group(columns: [\"isp\"])\n  |> count()",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> group(columns: [\"isp\"])\n  |> count()",
           "refId": "A"
         }
       ],
@@ -1172,7 +1172,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"isp_change\")\n  |> filter(fn: (r) => r._field == \"event\")",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"isp_change\")\n  |> filter(fn: (r) => r._field == \"event\")",
           "refId": "A"
         }
       ],
@@ -1275,7 +1275,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> group(columns: [\"connection_type\"])",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"download_mbps\")\n  |> group(columns: [\"connection_type\"])",
           "refId": "A"
         }
       ],
@@ -1365,7 +1365,7 @@
             "type": "influxdb",
             "uid": "${datasource}"
           },
-          "query": "from(bucket: \"speedtest\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_latency\")\n  |> group(columns: [\"connection_type\"])",
+          "query": "from(bucket: \"netpulse\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"speedtest\")\n  |> filter(fn: (r) => r._field == \"ping_latency\")\n  |> group(columns: [\"connection_type\"])",
           "refId": "A"
         }
       ],
