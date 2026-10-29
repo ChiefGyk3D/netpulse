@@ -7,10 +7,11 @@ datasources:
     url: http://influxdb:8086
     jsonData:
       version: Flux
-      organization: netpulse
-      defaultBucket: netpulse
-      tlsSkipVerify: true
+      # Grafana expands environment references in provisioning files; the values come from the
+      # grafana service environment in docker-compose.yml (and so from .env).
+      organization: ${INFLUXDB_ORG}
+      defaultBucket: ${INFLUXDB_BUCKET}
     secureJsonData:
-      token: netpulse-token-change-me
+      token: ${INFLUXDB_TOKEN}
     isDefault: true
     editable: true
