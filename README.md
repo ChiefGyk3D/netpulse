@@ -54,7 +54,7 @@ cp .env.example .env
 nano .env
 
 # Start the stack
-docker-compose up -d
+docker compose up -d
 ```
 
 ### Option 3: Docker with GHCR Image
@@ -137,6 +137,16 @@ sudo systemctl stop netpulse.timer
 sudo systemctl start netpulse.timer
 ```
 
+The unit in `systemd/netpulse.service` matches what `setup.sh` installs: it runs
+as the `netpulse` user from `/opt/netpulse`, reads credentials from
+`/etc/netpulse/netpulse.env` (an `EnvironmentFile`, so no token lives in the
+unit), and is hardened (`NoNewPrivileges`, `ProtectSystem=strict`,
+`CapabilityBoundingSet=` empty, `RestrictAddressFamilies`, and others). Note:
+the Ookla `speedtest` CLI writes its license acceptance file under the service
+user's `HOME`. That user is created with no home directory and the unit sets
+`ProtectHome=yes`, so how the two interact is unverified; if the license
+prompt repeats in the journal, report it in an issue.
+
 ### Uninstall
 
 ```bash
@@ -218,6 +228,50 @@ sudo ./setup.sh --local --influxdb-v1 --influxdb-user admin --influxdb-pass pass
 | 1 hour | `3600` | Light monitoring |
 | 4 hours | `14400` | Minimal data |
 
+## Reading your results
+
+The number NetPulse reports is what the host running the test can push, not
+what your ISP delivers to the building. The test host's own network port, NIC,
+cable, switch port, CPU and (on a VM) virtualization layer all cap the result,
+and the slowest of them wins. A Wi-Fi host reads lower and varies more, and a
+2.5 GbE host reads differently from a 1 GbE host on the same line.
+
+A real example: a host with a 1 Gbps Ethernet port behind a 2.5 Gbps WAN tops
+out around 940 Mbps of TCP throughput, while a faster client on the same WAN
+measured up to 1.19 Gbps. Nothing is wrong with the line; the 1 Gbps port is
+the ceiling.
+
+The arithmetic, for a standard 1500-byte MTU:
+
+- TCP payload per packet: 1500 - 20 (IP header) - 20 (TCP header) = 1460 bytes.
+- Bytes on the wire per packet: 1500 + 14 (Ethernet header) + 4 (frame check
+  sequence) + 8 (preamble) + 12 (inter-frame gap) = 1538 bytes.
+- 1460 / 1538 = 94.9%, so about 949 Mbps on a 1000 Mbps link, best case.
+- TCP timestamps (on by default in Linux) add 12 bytes per packet, leaving 1448
+  bytes of payload: 1448 / 1538 = 94.1%, so about 941 Mbps.
+
+You can check it yourself:
+
+```bash
+python3 -c "
+wire = 1500 + 14 + 4 + 8 + 12
+for name, payload in (('no options', 1460), ('timestamps', 1448)):
+    print(name, payload, wire, round(payload / wire * 1000, 1))
+"
+# no options 1460 1538 949.3
+# timestamps 1448 1538 941.5
+```
+
+Sources: the 1500-byte Ethernet payload limit is in
+[RFC 894](https://www.rfc-editor.org/rfc/rfc894), the 20-byte IP and TCP
+headers are in RFC 791 and RFC 793, and the 12-byte TCP timestamp option
+(10 bytes plus padding) is in
+[RFC 7323](https://www.rfc-editor.org/rfc/rfc7323). The preamble, inter-frame
+gap and frame check sequence come from IEEE 802.3, which is not an RFC. The 941
+and 949 Mbps figures are this arithmetic, not a quoted citation. A 2.5 GbE host
+scales the same way (about 2.35 Gbps), so read your number against the slowest
+link in the chain.
+
 ## ISP Change Detection
 
 The system detects ISP failovers using multiple methods:
@@ -277,28 +331,28 @@ In Grafana:
 
 ### Check Container Status
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
 ### View Speedtest Runner Logs
 ```bash
-docker-compose logs -f speedtest-runner
+docker compose logs -f speedtest-runner
 ```
 
 ### View All Logs
 ```bash
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ### Reset Everything
 ```bash
-docker-compose down -v
-docker-compose up -d
+docker compose down -v
+docker compose up -d
 ```
 
 ### Manual Speedtest
 ```bash
-docker-compose exec speedtest-runner speedtest --format=json
+docker compose exec speedtest-runner speedtest --format=json
 ```
 
 ## Data Retention
