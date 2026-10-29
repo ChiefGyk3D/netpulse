@@ -7,7 +7,7 @@
 services:
   influxdb:
     # influxdb:2.7.12 - Dependabot moves the tag and the digest together.
-    image: influxdb:2.7.12@sha256:b8d940ca9376f85118260f5b6bd236b8a00b1749c3350c5578d4cde8e27f31f2
+    image: influxdb:2.9.0@sha256:05ea1901ea421acf031b74e65b737fc911500e7f61189380596f84da18963fd1
     container_name: netpulse-influxdb
     restart: unless-stopped
     security_opt:
@@ -31,7 +31,7 @@ services:
 
   grafana:
     # grafana/grafana:12.4.14 - Dependabot moves the tag and the digest together.
-    image: grafana/grafana:12.4.14@sha256:ae509d9ae8c1021ca32ec370a9ca975d40165eda9fccd1e1102d317ff8787cd7
+    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
     container_name: netpulse-grafana
     restart: unless-stopped
     security_opt:
