@@ -7,11 +7,14 @@ datasources:
     url: http://influxdb:8086
     jsonData:
       version: Flux
-      # Grafana expands environment references in provisioning files; the values come from the
-      # grafana service environment in docker-compose.yml (and so from .env).
-      organization: ${INFLUXDB_ORG}
-      defaultBucket: ${INFLUXDB_BUCKET}
+      # Grafana expands environment references in provisioning files; the values
+      # come from the grafana service environment in docker-compose.yml (and so
+      # from .env). Keep the unbraced spelling: the braced form expands twice,
+      # which corrupts any value containing a dollar sign (Grafana provisioning
+      # docs, "Use of the special character $", read 2026-10-29).
+      organization: $INFLUXDB_ORG
+      defaultBucket: $INFLUXDB_BUCKET
     secureJsonData:
-      token: ${INFLUXDB_TOKEN}
+      token: $INFLUXDB_TOKEN
     isDefault: true
     editable: true

@@ -137,9 +137,78 @@ def test_image_guard_bites():
     assert DIGEST_RE.match("influxdb:2.7.12@sha256:" + "a" * 64)
 
 
+PLUGIN_PREFIXES = ("GF_INSTALL_PLUGINS", "GF_PLUGINS_PREINSTALL")
+
+
+def plugin_installs(services):
+    """Plugin installs at start: env vars, or a command/entrypoint override."""
+    bad = []
+    for name, svc in services.items():
+        for key in env_map(svc):
+            if key.startswith(PLUGIN_PREFIXES):
+                bad.append(f"{name}.{key}")
+        for field in ("command", "entrypoint"):
+            value = svc.get(field)
+            if value is not None and "plugins" in str(value).lower():
+                bad.append(f"{name}.{field}")
+    return bad
+
+
 def test_no_plugin_install_at_start():
-    for name, svc in load_compose()["services"].items():
-        assert "GF_INSTALL_PLUGINS" not in env_map(svc), name
+    assert plugin_installs(load_compose()["services"]) == []
+
+
+def test_plugin_guard_bites():
+    for key in (
+        "GF_INSTALL_PLUGINS",
+        "GF_INSTALL_PLUGINS_X",
+        "GF_PLUGINS_PREINSTALL",
+        "GF_PLUGINS_PREINSTALL_SYNC",
+    ):
+        assert plugin_installs({"g": {"environment": [key + "=a"]}}) == ["g." + key]
+    assert plugin_installs({"g": {"environment": {"GF_PLUGINS_PREINSTALL": "a"}}})
+    assert plugin_installs({"g": {"command": ["grafana", "cli", "plugins", "install"]}})
+    assert plugin_installs({"g": {"entrypoint": "sh -c 'grafana-cli plugins install x'"}})
+    assert plugin_installs({"g": {"environment": ["GF_PATHS_DATA=/x"]}}) == []
+
+
+def provisioning_dollar_brace(files):
+    """Provisioning files that use the double-expanding braced reference."""
+    return [str(f) for f in files if re.search(r"\$\{", f.read_text())]
+
+
+def test_provisioning_uses_unbraced_references():
+    files = [p for p in (ROOT / "grafana" / "provisioning").rglob("*.yml")]
+    assert files, "expected provisioning files"
+    assert provisioning_dollar_brace(files) == []
+
+
+def test_provisioning_guard_bites(tmp_path):
+    bad = tmp_path / "ds.yml"
+    bad.write_text("token: ${INFLUXDB_TOKEN}\n")
+    ok = tmp_path / "ok.yml"
+    ok.write_text("token: $INFLUXDB_TOKEN\n")
+    assert provisioning_dollar_brace([bad]) == [str(bad)]
+    assert provisioning_dollar_brace([ok]) == []
+
+
+def dockerfile_from_lines():
+    text = (ROOT / "speedtest-runner" / "Dockerfile").read_text()
+    return re.findall(r"^FROM\s+(?:--\S+\s+)?(\S+)", text, re.MULTILINE | re.IGNORECASE)
+
+
+def test_dockerfile_bases_are_digest_pinned():
+    froms = dockerfile_from_lines()
+    assert froms, "expected at least one FROM line"
+    for image in froms:
+        assert DIGEST_RE.match(image), image
+        assert not image.startswith("scratch")
+
+
+def test_dockerfile_guard_bites():
+    assert not DIGEST_RE.match("python:latest")
+    assert not DIGEST_RE.match("python:3.14-slim")
+    assert not DIGEST_RE.match("python@sha256:" + "a" * 64)
 
 
 def test_org_and_bucket_defaults_consistent():
@@ -148,7 +217,7 @@ def test_org_and_bucket_defaults_consistent():
         defaults = set(re.findall(re.escape("${" + var + ":-") + r"([^}]*)\}", raw))
         assert defaults == {"netpulse"}, (var, defaults)
     ds = DATASOURCE.read_text()
-    assert "${INFLUXDB_ORG" in ds and "${INFLUXDB_BUCKET" in ds
+    assert "$INFLUXDB_ORG" in ds and "$INFLUXDB_BUCKET" in ds
 
 
 def test_grafana_receives_datasource_variables():
@@ -160,7 +229,7 @@ def test_grafana_receives_datasource_variables():
 def test_datasource_has_no_literal_token_and_no_tls_skip():
     text = DATASOURCE.read_text()
     ds = yaml.safe_load(text)["datasources"][0]
-    assert ds["secureJsonData"]["token"] == "${INFLUXDB_TOKEN}"
+    assert ds["secureJsonData"]["token"] == "$INFLUXDB_TOKEN"
     assert "tlsSkipVerify" not in ds["jsonData"]
     assert ds["url"].startswith("http://influxdb:")
 
