@@ -10,6 +10,7 @@ Supports both InfluxDB 1.x (username/password) and 2.x (token-based) authenticat
 import json
 import os
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -30,7 +31,25 @@ INFLUXDB_USERNAME = os.getenv("INFLUXDB_USERNAME", "")
 INFLUXDB_PASSWORD = os.getenv("INFLUXDB_PASSWORD", "")
 INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", "netpulse")
 
-SPEEDTEST_INTERVAL = int(os.getenv("SPEEDTEST_INTERVAL", "1800"))  # 30 minutes default
+DEFAULT_SPEEDTEST_INTERVAL = 1800  # 30 minutes
+
+
+class ConfigError(ValueError):
+    """Raised for a bad configuration value, with a message fit to show the user."""
+
+
+def get_speedtest_interval() -> int:
+    """Read SPEEDTEST_INTERVAL when needed, so a bad value is a clear error, not an import crash."""
+    raw = os.getenv("SPEEDTEST_INTERVAL")
+    if raw is None:
+        return DEFAULT_SPEEDTEST_INTERVAL
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(f"SPEEDTEST_INTERVAL must be a whole number of seconds, got {raw!r}") from None
+    if value <= 0:
+        raise ConfigError(f"SPEEDTEST_INTERVAL must be greater than zero, got {raw!r}")
+    return value
 
 
 class ISPTracker:
@@ -99,13 +118,13 @@ class ISPTracker:
             if response.status_code == 200:
                 data = response.json()
                 ip_info["ip"] = data.get("ip")
-                ip_info["org"] = data.get("org", "")  # Contains ASN and org name
+                ip_info["org"] = data.get("org") or ""  # Contains ASN and org name
                 ip_info["city"] = data.get("city")
                 ip_info["region"] = data.get("region")
                 ip_info["country"] = data.get("country")
                 
                 # Parse ASN from org field (format: "AS12345 Company Name")
-                org = data.get("org", "")
+                org = data.get("org") or ""
                 if org.startswith("AS"):
                     parts = org.split(" ", 1)
                     ip_info["asn"] = parts[0]
@@ -123,7 +142,7 @@ class ISPTracker:
                     data = response.json()
                     ip_info["ip"] = data.get("query")
                     ip_info["isp"] = data.get("isp")
-                    ip_info["asn"] = data.get("as", "").split(" ")[0] if data.get("as") else None
+                    ip_info["asn"] = data["as"].split(" ")[0] if data.get("as") else None
                     ip_info["org"] = data.get("org")
                     ip_info["city"] = data.get("city")
                     ip_info["region"] = data.get("regionName")
@@ -168,6 +187,13 @@ class ISPTracker:
         current_asn = current_info.get("asn")
         current_connection_type = current_info.get("connection_type")
         
+        # A failed lookup carries no information. Keep the saved baseline and
+        # report no change, instead of overwriting it with None and raising a
+        # false change event on the next good lookup.
+        if current_ip is None:
+            print("IP lookup failed; keeping the previous ISP state")
+            return change_info
+
         # Check for changes (only if we have previous values)
         if self.last_ip is not None:
             if current_ip != self.last_ip:
@@ -305,13 +331,19 @@ def create_influxdb_writer() -> InfluxDBWriter:
         )
 
 
+def _fmt(value) -> str:
+    """Format a number for a log line; a missing value prints as n/a."""
+    return f"{value:.2f}" if isinstance(value, (int, float)) else "n/a"
+
+
 class SpeedtestRunner:
     """Runs speedtests and logs results to InfluxDB."""
     
-    def __init__(self):
+    def __init__(self, interval: int | None = None):
         self.writer = create_influxdb_writer()
         self.isp_tracker = ISPTracker()
         self.speedtest_accepted_license = False
+        self.interval = interval  # seconds between cycles in daemon mode; None for a single run
     
     def accept_speedtest_license(self):
         """Accept the Ookla speedtest license on first run."""
@@ -351,49 +383,66 @@ class SpeedtestRunner:
                 return None
             
             data = json.loads(result.stdout)
-            
+            if not isinstance(data, dict):
+                print("Speedtest output was not a JSON object")
+                return None
+
+            def section(parent: dict, key: str) -> dict:
+                """A nested object, or {} when the key is missing or null."""
+                value = parent.get(key)
+                return value if isinstance(value, dict) else {}
+
+            ping = section(data, "ping")
+            download = section(data, "download")
+            upload = section(data, "upload")
+            server = section(data, "server")
+            res = section(data, "result")
+            interface = section(data, "interface")
+            dl_latency = section(download, "latency")
+            ul_latency = section(upload, "latency")
+
             # Parse results
             speedtest_result = {
                 "timestamp": data.get("timestamp"),
-                "ping_jitter": data.get("ping", {}).get("jitter"),
-                "ping_latency": data.get("ping", {}).get("latency"),
-                "ping_low": data.get("ping", {}).get("low"),
-                "ping_high": data.get("ping", {}).get("high"),
-                "download_bandwidth": data.get("download", {}).get("bandwidth"),  # bytes/sec
-                "download_bytes": data.get("download", {}).get("bytes"),
-                "download_elapsed": data.get("download", {}).get("elapsed"),
-                "download_latency_iqm": data.get("download", {}).get("latency", {}).get("iqm"),
-                "download_latency_low": data.get("download", {}).get("latency", {}).get("low"),
-                "download_latency_high": data.get("download", {}).get("latency", {}).get("high"),
-                "upload_bandwidth": data.get("upload", {}).get("bandwidth"),  # bytes/sec
-                "upload_bytes": data.get("upload", {}).get("bytes"),
-                "upload_elapsed": data.get("upload", {}).get("elapsed"),
-                "upload_latency_iqm": data.get("upload", {}).get("latency", {}).get("iqm"),
-                "upload_latency_low": data.get("upload", {}).get("latency", {}).get("low"),
-                "upload_latency_high": data.get("upload", {}).get("latency", {}).get("high"),
+                "ping_jitter": ping.get("jitter"),
+                "ping_latency": ping.get("latency"),
+                "ping_low": ping.get("low"),
+                "ping_high": ping.get("high"),
+                "download_bandwidth": download.get("bandwidth"),  # bytes/sec
+                "download_bytes": download.get("bytes"),
+                "download_elapsed": download.get("elapsed"),
+                "download_latency_iqm": dl_latency.get("iqm"),
+                "download_latency_low": dl_latency.get("low"),
+                "download_latency_high": dl_latency.get("high"),
+                "upload_bandwidth": upload.get("bandwidth"),  # bytes/sec
+                "upload_bytes": upload.get("bytes"),
+                "upload_elapsed": upload.get("elapsed"),
+                "upload_latency_iqm": ul_latency.get("iqm"),
+                "upload_latency_low": ul_latency.get("low"),
+                "upload_latency_high": ul_latency.get("high"),
                 "packet_loss": data.get("packetLoss"),
-                "server_id": data.get("server", {}).get("id"),
-                "server_name": data.get("server", {}).get("name"),
-                "server_location": data.get("server", {}).get("location"),
-                "server_country": data.get("server", {}).get("country"),
-                "server_host": data.get("server", {}).get("host"),
-                "result_id": data.get("result", {}).get("id"),
-                "result_url": data.get("result", {}).get("url"),
+                "server_id": server.get("id"),
+                "server_name": server.get("name"),
+                "server_location": server.get("location"),
+                "server_country": server.get("country"),
+                "server_host": server.get("host"),
+                "result_id": res.get("id"),
+                "result_url": res.get("url"),
                 "isp": data.get("isp"),
-                "external_ip": data.get("interface", {}).get("externalIp"),
-                "internal_ip": data.get("interface", {}).get("internalIp"),
+                "external_ip": interface.get("externalIp"),
+                "internal_ip": interface.get("internalIp"),
             }
-            
+
             # Convert bandwidth from bytes/sec to Mbps for readability
-            if speedtest_result["download_bandwidth"]:
+            if speedtest_result["download_bandwidth"] is not None:
                 speedtest_result["download_mbps"] = (speedtest_result["download_bandwidth"] * 8) / 1_000_000
-            if speedtest_result["upload_bandwidth"]:
+            if speedtest_result["upload_bandwidth"] is not None:
                 speedtest_result["upload_mbps"] = (speedtest_result["upload_bandwidth"] * 8) / 1_000_000
             
-            print(f"  Download: {speedtest_result.get('download_mbps', 0):.2f} Mbps")
-            print(f"  Upload: {speedtest_result.get('upload_mbps', 0):.2f} Mbps")
-            print(f"  Ping: {speedtest_result.get('ping_latency', 0):.2f} ms")
-            print(f"  Jitter: {speedtest_result.get('ping_jitter', 0):.2f} ms")
+            print(f"  Download: {_fmt(speedtest_result.get('download_mbps'))} Mbps")
+            print(f"  Upload: {_fmt(speedtest_result.get('upload_mbps'))} Mbps")
+            print(f"  Ping: {_fmt(speedtest_result.get('ping_latency'))} ms")
+            print(f"  Jitter: {_fmt(speedtest_result.get('ping_jitter'))} ms")
             
             return speedtest_result
             
@@ -412,29 +461,23 @@ class SpeedtestRunner:
         try:
             # Main speedtest metrics
             tags = {
-                "server_name": result.get("server_name", "unknown"),
-                "server_location": result.get("server_location", "unknown"),
-                "server_country": result.get("server_country", "unknown"),
-                "isp": ip_info.get("isp", result.get("isp", "unknown")),
-                "asn": ip_info.get("asn", "unknown"),
-                "connection_type": ip_info.get("connection_type", "unknown"),
-                "external_ip": ip_info.get("ip", result.get("external_ip", "unknown")),
+                "server_name": result.get("server_name") or "unknown",
+                "server_location": result.get("server_location") or "unknown",
+                "server_country": result.get("server_country") or "unknown",
+                "isp": ip_info.get("isp") or result.get("isp") or "unknown",
+                "asn": ip_info.get("asn") or "unknown",
+                "connection_type": ip_info.get("connection_type") or "unknown",
+                "external_ip": ip_info.get("ip") or result.get("external_ip") or "unknown",
             }
-            fields = {
-                "download_mbps": result.get("download_mbps", 0.0),
-                "upload_mbps": result.get("upload_mbps", 0.0),
-                "download_bandwidth": result.get("download_bandwidth", 0),
-                "upload_bandwidth": result.get("upload_bandwidth", 0),
-                "ping_latency": result.get("ping_latency", 0.0),
-                "ping_jitter": result.get("ping_jitter", 0.0),
-                "ping_low": result.get("ping_low", 0.0),
-                "ping_high": result.get("ping_high", 0.0),
-                "download_latency_iqm": result.get("download_latency_iqm", 0.0),
-                "upload_latency_iqm": result.get("upload_latency_iqm", 0.0),
-                "packet_loss": result.get("packet_loss") if result.get("packet_loss") is not None else 0.0,
-                "result_url": result.get("result_url", ""),
-            }
-            
+            # A value the speedtest did not report stays None, and the writers
+            # drop None, so a missing measurement is a gap rather than a fake 0.
+            field_names = (
+                "download_mbps", "upload_mbps", "download_bandwidth", "upload_bandwidth",
+                "ping_latency", "ping_jitter", "ping_low", "ping_high",
+                "download_latency_iqm", "upload_latency_iqm", "packet_loss", "result_url",
+            )
+            fields = {name: result.get(name) for name in field_names}
+
             self.writer.write_point("speedtest", tags, fields)
             
             # Write ISP change event if detected
@@ -498,7 +541,8 @@ class SpeedtestRunner:
                 print(f"Error logging speedtest failure: {e}")
         
         print(f"[{datetime.now().isoformat()}] Test cycle complete")  # noqa: DTZ005  # local wall-clock for log line
-        print(f"Next test in {SPEEDTEST_INTERVAL} seconds ({SPEEDTEST_INTERVAL/60:.1f} minutes)")
+        if self.interval:
+            print(f"Next test in {self.interval} seconds ({self.interval/60:.1f} minutes)")
 
 
 def wait_for_influxdb():
@@ -523,7 +567,7 @@ def wait_for_influxdb():
     return False
 
 
-def main():
+def main(argv: list[str] | None = None):
     """Main entry point."""
     import argparse
     
@@ -546,11 +590,18 @@ Examples:
         "--interval", "-i",
         type=int,
         default=None,
-        help=f"Override test interval in seconds (default: {SPEEDTEST_INTERVAL})"
+        help=f"Override test interval in seconds (default: SPEEDTEST_INTERVAL or {DEFAULT_SPEEDTEST_INTERVAL})"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     
-    interval = args.interval if args.interval else SPEEDTEST_INTERVAL
+    # A single run never schedules anything, so it does not need the interval.
+    interval = None
+    if not args.once:
+        try:
+            interval = args.interval if args.interval else get_speedtest_interval()
+        except ConfigError as e:
+            print(f"Configuration error: {e}", file=sys.stderr)
+            sys.exit(2)
     
     print("="*60)
     print("NetPulse - Network Speed & ISP Monitor")
@@ -566,10 +617,11 @@ Examples:
     
     # Wait for InfluxDB
     if not wait_for_influxdb():
-        return
+        print("InfluxDB never became ready; exiting with an error", file=sys.stderr)
+        sys.exit(1)
     
     # Create runner
-    runner = SpeedtestRunner()
+    runner = SpeedtestRunner(interval=interval)
     
     # Run initial test
     runner.run_test_cycle()
