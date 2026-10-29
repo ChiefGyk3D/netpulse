@@ -1,7 +1,7 @@
 [Unit]
 Description=NetPulse Speedtest Runner
 Documentation=https://github.com/chiefgyk3d/netpulse
-After=network-online.target influxdb.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -9,11 +9,9 @@ Type=oneshot
 User=netpulse
 Group=netpulse
 WorkingDirectory=/opt/netpulse
+# Credentials live in the env file (root:netpulse, mode 640), never in the unit.
+EnvironmentFile=/etc/netpulse/netpulse.env
 ExecStart=/opt/netpulse/venv/bin/python /opt/netpulse/speedtest_runner.py --once
-Environment="INFLUXDB_URL=http://localhost:8086"
-Environment="INFLUXDB_TOKEN=netpulse-token-change-me"
-Environment="INFLUXDB_ORG=netpulse"
-Environment="INFLUXDB_BUCKET=netpulse"
 Environment="NETPULSE_STATE_FILE=/var/lib/netpulse/state.json"
 
 # Security hardening
@@ -22,16 +20,19 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/netpulse
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-
-# Allow network access
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
 PrivateNetwork=no
 
-# Logging
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=netpulse

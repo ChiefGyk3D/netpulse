@@ -1,6 +1,6 @@
 # GitHub Actions Workflows
 
-Three thin callers. The jobs themselves live in
+Five thin callers. The jobs themselves live in
 [ChiefGyk3D/git-your-ship-together](https://github.com/ChiefGyk3D/git-your-ship-together),
 shared with Typo Sniper, Stream Daemon, Star Daemon and Boon Tube Daemon, so a
 pipeline fix or a new scan step lands once. Each file here says only what is
@@ -9,9 +9,11 @@ and build context, the Doppler project.
 
 | Workflow | Triggers | Calls | What it does |
 |---|---|---|---|
-| `ci.yml` | push to main/develop/copilot/**, PRs, manual | `python-ci.yml` | Lint (ruff), a byte-compile of `speedtest-runner/` on Python 3.10–3.14, Docker build with an import check, one `CI green` gate job for branch protection |
+| `ci.yml` | push to main/develop, PRs, manual | `python-ci.yml` | Lint (ruff, gating), the hermetic pytest suite with coverage and a byte-compile of `speedtest-runner/` on Python 3.10–3.14, Docker build with an import check, one `CI green` gate job for branch protection |
 | `release.yml` | push to main, `v*.*.*` tags, PRs, weekly, manual | `python-docker-release.yml` | Build and test on every PR; on main and tags publish a multi-arch (amd64 + arm64) image to `ghcr.io/chiefgyk3d/netpulse`, signed with cosign, with a syft SBOM attached and SLSA provenance recorded; Trivy scan to the Security tab |
 | `security.yml` | push to main/develop, PRs, weekly, manual | `security.yml` | CodeQL, gitleaks over the full history, pip-audit, dependency review on PRs, Snyk |
+| `verify.yml` | nightly, manual | `verify-published.yml` | Pulls the published image and verifies its cosign signature, SBOM attestation and provenance, then runs the import check on both platforms |
+| `dependabot-auto-merge.yml` | PRs | `dependabot-auto-merge.yml` | Merges Dependabot PRs once the gate is green; major bumps are left for a person |
 
 ## Secrets: Doppler, not GitHub
 
@@ -26,7 +28,7 @@ to Doppler with a short-lived token minted from its own GitHub OIDC identity
 
 Nothing else is needed today: the image goes to GHCR with the job's own
 `GITHUB_TOKEN` (Docker Hub publishing is off, as it always was), and there is
-no coverage to upload to Codecov until a test suite exists.
+coverage is produced by the test step but not uploaded to Codecov.
 
 The one per-repository setting is the **repository variable**
 `DOPPLER_IDENTITY_ID` (Settings → Secrets and variables → Actions →
@@ -78,17 +80,17 @@ cooldown on new releases.
 
 - `ci-tests.yml`, `docker-build-publish.yml`, `codeql-analysis.yml`,
   `dependency-review.yml`, `dependency-scan.yml` and `snyk-security.yml` were
-  replaced by the three callers above.
+  replaced by the callers above.
 - The test step is honest now. The old one ran `pytest tests/` against a
   directory that does not exist and hid the result behind
-  `|| echo "No tests found - skipping"`; the new one byte-compiles
-  `speedtest-runner/` on every Python in the matrix. Replace it with pytest
-  and turn on `codecov` when a test suite lands.
+  `|| echo "No tests found - skipping"`; the migration
+  first byte-compiled `speedtest-runner/` on every Python in the matrix, and
+  `ci.yml` now runs the hermetic pytest suite in `tests/` as well.
 - Bandit and `safety check` were dropped: `safety check` is deprecated
   upstream and needs an account, and both ran as advisory-only. CodeQL and
   ruff's `S` rules cover SAST and pip-audit covers the advisory database.
-- pip-audit gates. Ruff lint stays advisory (`lint-continue-on-error`) until
-  the tree is clean; delete that line to make it gate.
+- pip-audit gates, and so does ruff lint: `ci.yml` sets no
+  `lint-continue-on-error`, so a lint failure fails `CI green`.
 - `.gitleaks.toml` extends the default ruleset; the full-history scan found
   nothing, so it allowlists nothing.
 - Images are now signed, carry an SBOM and provenance, and a publishing build
