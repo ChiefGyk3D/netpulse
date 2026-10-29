@@ -1,0 +1,15 @@
+{
+  "type": "result",
+  "timestamp": "2026-10-29T12:00:00Z",
+  "ping": {"jitter": 0.8, "latency": 12.5, "low": 11.0, "high": 15.0},
+  "download": {"bandwidth": 12500000, "bytes": 150000000, "elapsed": 12000,
+               "latency": {"iqm": 30.1, "low": 12.0, "high": 80.0}},
+  "upload": {"bandwidth": 2500000, "bytes": 30000000, "elapsed": 12000,
+             "latency": {"iqm": 40.2, "low": 13.0, "high": 90.0}},
+  "packetLoss": 0.0,
+  "isp": "Example Cable Co",
+  "interface": {"internalIp": "192.0.2.10", "externalIp": "203.0.113.7"},
+  "server": {"id": 1234, "host": "speedtest.example.net", "name": "Example Net",
+             "location": "Exampleville", "country": "United States"},
+  "result": {"id": "abc-123", "url": "https://www.speedtest.net/result/c/abc-123"}
+}

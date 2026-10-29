@@ -1,0 +1,10 @@
+# Test-only dependencies. requirements-dev.txt is generated from this file; it
+# includes the runtime requirements, pinned to the same versions and hashes as
+# requirements.txt through the constraint below. Regenerate after editing:
+#
+#   pip install uv
+#   uv pip compile requirements-dev.in --universal --generate-hashes --python-version 3.10 -o requirements-dev.txt
+-r requirements.in
+-c requirements.txt
+pytest
+pytest-cov
