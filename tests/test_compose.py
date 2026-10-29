@@ -79,10 +79,10 @@ def test_secrets_are_required_variables_not_defaults():
     # The three secrets must each appear in required-variable form.
     raw = COMPOSE.read_text()
     for var in SECRET_NAMES:
-        assert re.search(r"\$\{%s:\?[^}]+\}" % var, raw), var
+        assert re.search(re.escape("${" + var + ":?") + r"[^}]+\}", raw), var
     # And none may carry a fallback default.
     for var in SECRET_NAMES:
-        assert not re.search(r"\$\{%s:-" % var, raw), var
+        assert not re.search(re.escape("${" + var + ":-"), raw), var
 
 
 def test_secret_guard_bites():
@@ -145,7 +145,7 @@ def test_no_plugin_install_at_start():
 def test_org_and_bucket_defaults_consistent():
     raw = COMPOSE.read_text()
     for var in ("INFLUXDB_ORG", "INFLUXDB_BUCKET"):
-        defaults = set(re.findall(r"\$\{%s:-([^}]*)\}" % var, raw))
+        defaults = set(re.findall(re.escape("${" + var + ":-") + r"([^}]*)\}", raw))
         assert defaults == {"netpulse"}, (var, defaults)
     ds = DATASOURCE.read_text()
     assert "${INFLUXDB_ORG" in ds and "${INFLUXDB_BUCKET" in ds
@@ -170,9 +170,9 @@ def test_env_example_covers_every_variable_without_secrets():
     used = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)[:}]", raw))
     example = ENV_EXAMPLE.read_text()
     for var in used:
-        assert re.search(r"^#?\s*%s=" % var, example, re.M), var
+        assert re.search(r"^#?\s*" + var + "=", example, re.MULTILINE), var
     for var in SECRET_NAMES:
-        assert re.search(r"^%s=\s*$" % var, example, re.M), var
+        assert re.search("^" + var + r"=\s*$", example, re.MULTILINE), var
     assert "openssl rand -hex 32" in example
 
 
