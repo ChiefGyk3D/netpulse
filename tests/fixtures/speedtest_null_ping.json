@@ -1,0 +1,11 @@
+{
+  "type": "result",
+  "timestamp": "2026-10-29T12:00:00Z",
+  "ping": null,
+  "download": {"bandwidth": 12500000, "bytes": 150000000, "elapsed": 12000, "latency": null},
+  "upload": null,
+  "packetLoss": null,
+  "server": null,
+  "interface": null,
+  "result": null
+}

@@ -34,15 +34,13 @@ jobs:
       lint-python-version: "3.14"
       install-command: |
         python -m pip install --upgrade pip
-        pip install --require-hashes -r speedtest-runner/requirements.txt
-      # There is no test suite yet. The old workflow ran pytest against a
-      # tests/ directory that does not exist and hid that behind
-      # `|| echo "No tests found"`. A byte-compile of the runner on every
-      # Python in the matrix is what can honestly be checked today, plus a config
-      # check that the InfluxDB org and bucket agree across compose, Grafana and
-      # the dashboard (scripts/check_config.py); replace
-      # this with pytest when tests land, and turn on `codecov`.
-      test-command: python -m compileall -q speedtest-runner && python scripts/check_config.py && python -m unittest discover -s tests
+        pip install --require-hashes -r speedtest-runner/requirements-dev.txt
+      # The hermetic suite in tests/ (no network, no real speedtest, no real
+      # InfluxDB). requirements-dev.txt is requirements.txt plus pytest. The
+      # byte-compile runs on every Python in the matrix, and scripts/check_config.py
+      # checks that the InfluxDB org and bucket agree across compose, Grafana and
+      # the dashboard. tests/test_check_config.py runs under pytest.
+      test-command: python -m compileall -q speedtest-runner && python scripts/check_config.py && python -m pytest --cov=speedtest_runner --cov-report=term-missing --cov-report=xml
       lint-command: ruff check speedtest-runner/ scripts/ tests/ --output-format=github
       dockerfile: speedtest-runner/Dockerfile
       docker-context: speedtest-runner
