@@ -11,6 +11,11 @@
 # Docker volumes (if mounted locally)
 data/
 
+# Test artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+
 # Python
 __pycache__/
 *.py[cod]
