@@ -1,0 +1,30 @@
+# shellcheck and shfmt over setup.sh, plus a lint of the workflow files. The
+# jobs live in ChiefGyk3D/git-your-ship-together; this file only says what is
+# specific to NetPulse. The job is named `shell` because ci.yml already owns
+# `ci`; the reusable workflow ends in its own `CI green` gate.
+name: Bash CI
+
+on:
+  push:
+    branches: [main, develop, copilot/**]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/bash-ci.yml@6f40107c2e05483f485452991e422f7f63886000 # v1.25.1
+    permissions:
+      contents: read
+    with:
+      # The script is installed by hand on real machines, so it is checked at
+      # the strictest severity. The tests for it run in the Python suite (ci.yml).
+      shellcheck-severity: style
+      egress-policy: block
