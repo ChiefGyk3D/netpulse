@@ -45,8 +45,17 @@ class CheckConfig(unittest.TestCase):
         self.assertTrue(check_config.check(self.tmp))
 
     def test_datasource_mismatch_fails(self):
-        self.edit("grafana/provisioning/datasources/influxdb.yml", "defaultBucket: netpulse", "defaultBucket: other")
+        self.edit("grafana/provisioning/datasources/influxdb.yml", "defaultBucket: $INFLUXDB_BUCKET", "defaultBucket: other")
         self.assertTrue(check_config.check(self.tmp))
+
+    def test_datasource_reference_to_unset_variable_fails(self):
+        self.edit("grafana/provisioning/datasources/influxdb.yml", "organization: $INFLUXDB_ORG", "organization: $NOT_SET_ORG")
+        self.assertTrue(any("datasource ORG" in e and "not set" in e for e in check_config.check(self.tmp)))
+
+    def test_datasource_reference_follows_compose_default(self):
+        # The braced spelling resolves the same way as the unbraced one.
+        self.edit("grafana/provisioning/datasources/influxdb.yml", "organization: $INFLUXDB_ORG", "organization: ${INFLUXDB_ORG}")
+        self.assertEqual(check_config.check(self.tmp), [])
 
     def test_broken_dashboard_json_fails(self):
         (self.tmp / "grafana/dashboards/speedtest.json").write_text("{not json")

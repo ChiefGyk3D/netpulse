@@ -20,6 +20,7 @@ EXPECTED = "netpulse"
 # lines never match. The value may be a literal, ${VAR:-default} or ${VAR-default}.
 ENV_LINE = r"^\s*(?:-\s*)?{name}\s*[=:]\s*[\"']?(?P<value>[^\"'\s#]*)[\"']?\s*(?:#.*)?$"
 EXPAND_RE = re.compile(r"^\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)(?P<op>:-|-)(?P<default>[^}]*)\}$")
+ENV_REF_RE = re.compile(r"^\$\{?(?P<var>[A-Za-z_][A-Za-z0-9_]*)\}?$")
 DATASOURCE_RE = {
     "ORG": re.compile(r"^\s*organization:\s*(\S+)\s*$", re.MULTILINE),
     "BUCKET": re.compile(r"^\s*defaultBucket:\s*(\S+)\s*$", re.MULTILINE),
@@ -61,6 +62,23 @@ def effective_values(compose: str, name: str) -> list[str]:
     return out
 
 
+def datasource_values(compose: str, values: list[str]) -> list[str]:
+    """Resolve $VAR / ${VAR} datasource references to the compose defaults of VAR.
+
+    Grafana expands these from its own environment, which docker-compose.yml
+    sets from the same variable the runner uses; a literal passes through.
+    """
+    out = []
+    for value in values:
+        m = ENV_REF_RE.match(value)
+        if not m:
+            out.append(value)
+            continue
+        defaults = effective_values(compose, m.group("var"))
+        out.extend(defaults or [f"<{value}: not set in docker-compose.yml>"])
+    return out
+
+
 def check(root: Path) -> list[str]:
     errors = []
 
@@ -84,7 +102,7 @@ def check(root: Path) -> list[str]:
     datasource = (root / "grafana/provisioning/datasources/influxdb.yml").read_text()
     runner = (root / "speedtest-runner/speedtest_runner.py").read_text()
     for kind in ("ORG", "BUCKET"):
-        found(f"datasource {kind}", DATASOURCE_RE[kind].findall(datasource))
+        found(f"datasource {kind}", datasource_values(compose, DATASOURCE_RE[kind].findall(datasource)))
         found(f"runner default {kind}", RUNNER_RE[kind].findall(runner))
 
     dashboards = sorted((root / "grafana/dashboards").rglob("*.json"))

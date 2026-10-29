@@ -1,39 +1,56 @@
-version: '3.8'
+# NetPulse stack: InfluxDB + Grafana + the speedtest runner.
+#
+# Copy .env.example to .env and fill in the required values first; compose
+# stops with a message naming any required value that is missing.
+# Published ports bind to ${NETPULSE_BIND_ADDR:-127.0.0.1}; see .env.example.
 
 services:
   influxdb:
-    image: influxdb:2.7
+    # influxdb:2.7.12 - Dependabot moves the tag and the digest together.
+    image: influxdb:2.7.12@sha256:b8d940ca9376f85118260f5b6bd236b8a00b1749c3350c5578d4cde8e27f31f2
     container_name: netpulse-influxdb
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 512
     ports:
-      - "8086:8086"
+      - "${NETPULSE_BIND_ADDR:-127.0.0.1}:8086:8086"
     volumes:
       - influxdb-data:/var/lib/influxdb2
       - influxdb-config:/etc/influxdb2
     environment:
       - DOCKER_INFLUXDB_INIT_MODE=setup
       - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_USERNAME:-admin}
-      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-speedtest123}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:?set INFLUXDB_PASSWORD in .env}
       - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-netpulse}
       - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-netpulse}
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-netpulse-token-change-me}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:?set INFLUXDB_TOKEN in .env}
     networks:
       - netpulse-network
 
   grafana:
-    image: grafana/grafana:latest
+    # grafana/grafana:12.4.14 - Dependabot moves the tag and the digest together.
+    image: grafana/grafana:12.4.14@sha256:ae509d9ae8c1021ca32ec370a9ca975d40165eda9fccd1e1102d317ff8787cd7
     container_name: netpulse-grafana
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
     ports:
-      - "3000:3000"
+      - "${NETPULSE_BIND_ADDR:-127.0.0.1}:3000:3000"
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?set GRAFANA_PASSWORD in .env}
+      # Read by grafana/provisioning/datasources/influxdb.yml (environment expansion)
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:?set INFLUXDB_TOKEN in .env}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-netpulse}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-netpulse}
     depends_on:
       - influxdb
     networks:
@@ -45,22 +62,40 @@ services:
       dockerfile: Dockerfile
     container_name: netpulse-runner
     restart: unless-stopped
+    # The runner needs no privileges: it makes outbound requests and writes
+    # its state file to the volume below.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      # Scratch space; HOME points here because the Ookla CLI writes its
+      # license acceptance under HOME and the root filesystem is read-only.
+      - /tmp
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    healthcheck:
+      # Dependency-free liveness check: the runner is PID 1 of the container.
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0 if b'speedtest_runner' in open('/proc/1/cmdline', 'rb').read() else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     environment:
       # InfluxDB version: "1" or "2" (default: 2)
       - INFLUXDB_VERSION=${INFLUXDB_VERSION:-2}
       - INFLUXDB_URL=http://influxdb:8086
       # InfluxDB 2.x settings (token-based)
-      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-netpulse-token-change-me}
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:?set INFLUXDB_TOKEN in .env}
       - INFLUXDB_ORG=${INFLUXDB_ORG:-netpulse}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-netpulse}
-      # InfluxDB 1.x settings (username/password) - uncomment if using v1
-      # - INFLUXDB_USERNAME=${INFLUXDB_USERNAME:-admin}
-      # - INFLUXDB_PASSWORD=${INFLUXDB_PASSWORD:-netpulse123}
-      # - INFLUXDB_DATABASE=${INFLUXDB_DATABASE:-netpulse}
       # General settings
       - SPEEDTEST_INTERVAL=${SPEEDTEST_INTERVAL:-1800}
       - TZ=${TZ:-America/New_York}
       - NETPULSE_STATE_FILE=/data/state.json
+      - HOME=/tmp
     volumes:
       - netpulse-state:/data
     depends_on:
