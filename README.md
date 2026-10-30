@@ -41,19 +41,30 @@ The interactive setup script offers:
 - **Docker Compose** with local build
 - **Docker with GHCR** pre-built images
 
+For the Docker choices, `setup.sh` writes a `.env` next to `docker-compose.yml` on the first run. It holds freshly generated random values (256 bits each, never a shared default) for the three required secrets, `INFLUXDB_PASSWORD`, `INFLUXDB_TOKEN` and `GRAFANA_PASSWORD`. The file is created with mode `0600`, the values are never printed, and an existing `.env` is never overwritten, so re-running the script keeps your credentials. To rotate them, delete `.env` and the data volumes, then run it again. A token you pass through `NETPULSE_INFLUXDB_TOKEN` is kept instead of a generated one. Read the Grafana password with `grep GRAFANA_PASSWORD .env`.
+
+The local install (`--local`) points at an InfluxDB you already run, so its token or password is yours to supply (flag, environment or silent prompt) and is stored in a `0600` file; the script cannot invent credentials for a server it does not own.
+
+The published InfluxDB (8086) and Grafana (3000) ports bind to `127.0.0.1` only. To reach them from another machine, set `NETPULSE_BIND_ADDR` to that interface's address (or `0.0.0.0` for all interfaces) before running `setup.sh`, or edit it in `.env` and run `docker compose up -d`. Do that only behind a firewall or reverse proxy.
+
 ### Option 2: Docker Compose (Manual)
+
+Compose stops with a message naming any required value that is empty, so fill the three secrets in first. Generate each one separately:
 
 ```bash
 git clone https://github.com/chiefgyk3d/netpulse.git
 cd netpulse
 
-# Copy the example environment file
+# Copy the example environment file and keep it private
 cp .env.example .env
+chmod 600 .env
 
-# Edit .env with your preferred settings
+# Put a different random value after each of INFLUXDB_PASSWORD,
+# INFLUXDB_TOKEN and GRAFANA_PASSWORD (run once per value)
+openssl rand -hex 32
 nano .env
 
-# Start the stack
+# Start the stack (ports bind to 127.0.0.1 unless NETPULSE_BIND_ADDR is set)
 docker compose up -d
 ```
 
@@ -90,7 +101,9 @@ sudo ./setup.sh --local --influxdb-v1 --influxdb-user admin --influxdb-pass secr
 Open http://localhost:3000 in your browser.
 
 - **Username**: `admin`
-- **Password**: `admin` (or whatever you set in `.env`)
+- **Password**: the `GRAFANA_PASSWORD` value in `.env` (there is no default password)
+
+Grafana listens on `127.0.0.1` by default; see `NETPULSE_BIND_ADDR` above to change that.
 
 The "Speedtest Dashboard" will be auto-provisioned and ready to use!
 
@@ -217,7 +230,9 @@ sudo ./setup.sh --local --influxdb-v1 --influxdb-user admin --influxdb-pass pass
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GRAFANA_USER` | `admin` | Grafana admin username |
-| `GRAFANA_PASSWORD` | `admin` | Grafana admin password |
+| `GRAFANA_PASSWORD` | - | Grafana admin password (required; `setup.sh` generates it) |
+| `INFLUXDB_PASSWORD` | - | InfluxDB initial admin password (required for Docker; `setup.sh` generates it) |
+| `NETPULSE_BIND_ADDR` | `127.0.0.1` | Address the InfluxDB and Grafana ports bind to |
 
 ### Recommended Intervals
 
