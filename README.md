@@ -284,6 +284,19 @@ one burst per target per minute.
 | `PROBE_INTERVAL` | `60` | Seconds between bursts (minimum 10) |
 | `PROBE_COUNT` | `5` | Samples per burst (1 to 20) |
 | `PROBE_TIMEOUT` | `2` | Seconds to wait for each sample |
+| `PROBE_TIMING` | `1` | Write the `probe_timing` measurement (`1` on, `0` off); see below |
+
+**DNS and HTTP timing.** Once per cycle each target also gets one timed
+attempt, written to a separate `probe_timing` measurement with the same
+`target`, `kind` and `host` tags: `dns_ms` (name resolution, every kind),
+`connect_ms` (TCP connect, `tcp` and `https` targets), `tls_ms` (handshake with
+full certificate verification) and `ttfb_ms` (a `HEAD` request until the first
+response byte; a 5xx answer fails), the last two for `https` targets only. Every
+point carries `error` (`0` or `1`). A failed attempt is still written: `error=1`,
+`error_stage` (`dns`, `connect`, `tls`, `http` or `unknown`) and whichever
+timings finished before the failure, so an outage shows up as error points, not
+a gap. Set `PROBE_TIMING=0` to turn it off. Each stage may use up to
+`PROBE_TIMEOUT`, and that counts toward the worst-case cycle check below.
 
 The probe refuses to start if the targets, count and timeout could not finish
 inside one interval.

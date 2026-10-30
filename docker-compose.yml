@@ -143,6 +143,7 @@ services:
       - PROBE_INTERVAL=${PROBE_INTERVAL:-60}
       - PROBE_COUNT=${PROBE_COUNT:-5}
       - PROBE_TIMEOUT=${PROBE_TIMEOUT:-2}
+      - PROBE_TIMING=${PROBE_TIMING:-1}
       - TZ=${TZ:-America/New_York}
     depends_on:
       - influxdb

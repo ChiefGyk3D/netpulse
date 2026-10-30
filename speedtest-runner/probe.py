@@ -4,7 +4,10 @@ NetPulse - Continuous Probe
 
 Measures packet loss, latency and jitter to a few configurable targets with
 small, frequent probes (ICMP echo, TCP connect, HTTPS HEAD) and writes one
-"probe" point per target per cycle to InfluxDB.
+"probe" point per target per cycle to InfluxDB. Unless PROBE_TIMING=0 it also
+writes one "probe_timing" point per target per cycle with the DNS, TCP connect,
+TLS handshake and time-to-first-byte durations; a failed attempt is written as
+an error point so an outage is visible rather than a gap.
 
 Runs beside the speedtest runner and shares its InfluxDB writers (1.x and 2.x),
 so both versions get the same points. It is a separate entrypoint: the
@@ -24,6 +27,7 @@ import socket
 import ssl
 import struct
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -40,6 +44,8 @@ MIN_INTERVAL = 10  # a floor, so a typo cannot turn this into a flood
 MAX_COUNT = 20
 MAX_TIMEOUT = 30.0
 SAMPLE_GAP = 0.2  # seconds between samples in a burst
+MAX_DNS_INFLIGHT = 4  # resolver threads that may be stuck at once; more attempts fail fast
+TIMING_STAGES = 4  # dns, connect, tls, ttfb: each may use up to one timeout
 
 ICMP_ECHO_REQUEST = 8
 ICMP_ECHO_REPLY = 0
@@ -61,6 +67,7 @@ class ProbeConfig:
     interval: int
     count: int
     timeout: float
+    timing: bool = False  # load_config() turns this on by default; direct callers opt in
 
 
 def _redact(spec: str) -> str:
@@ -129,21 +136,34 @@ def _env_number(name: str, default, cast, low, high):
     return value
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError(f"{name} must be 1 or 0 (true or false), got {raw!r}")
+
+
 def load_config() -> ProbeConfig:
     """Read the PROBE_* settings when needed, so a bad value is a clear error, not an import crash."""
     targets = parse_targets(os.getenv("PROBE_TARGETS", DEFAULT_TARGETS))
     interval = _env_number("PROBE_INTERVAL", DEFAULT_INTERVAL, int, MIN_INTERVAL, 86400)
     count = _env_number("PROBE_COUNT", DEFAULT_COUNT, int, 1, MAX_COUNT)
     timeout = _env_number("PROBE_TIMEOUT", DEFAULT_TIMEOUT, float, 0.1, MAX_TIMEOUT)
-    # Targets run one after another, so the worst case (every sample times out)
-    # must still fit in one interval or cycles would pile up.
-    worst = len(targets) * count * (timeout + SAMPLE_GAP)
+    timing = _env_bool("PROBE_TIMING", True)
+    # Targets run one after another, so the worst case (every sample times out,
+    # and every timing stage too) must still fit in one interval or cycles would pile up.
+    worst = len(targets) * (count * (timeout + SAMPLE_GAP) + (TIMING_STAGES * timeout if timing else 0))
     if worst > interval:
         raise ConfigError(
             f"PROBE_INTERVAL ({interval}s) is shorter than the worst-case cycle ({worst:.0f}s) "
             "for these targets, count and timeout; raise the interval or lower the others"
         )
-    return ProbeConfig(targets=targets, interval=interval, count=count, timeout=timeout)
+    return ProbeConfig(targets=targets, interval=interval, count=count, timeout=timeout, timing=timing)
 
 
 def summarize(rtts: list[float], sent: int) -> dict:
@@ -184,6 +204,19 @@ def build_echo_request(ident: int, seq: int) -> bytes:
     return struct.pack("!BBHHH", ICMP_ECHO_REQUEST, 0, checksum, ident, seq) + ICMP_PAYLOAD
 
 
+def _tls_context() -> ssl.SSLContext:
+    """A verifying client context that refuses anything older than TLS 1.2."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_default_certs()
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = True
+    return ctx
+
+
+_DNS_SLOTS = threading.BoundedSemaphore(MAX_DNS_INFLIGHT)
+
+
 class Net:
     """The network layer. Every socket the module opens goes through here, so tests replace it."""
 
@@ -208,7 +241,7 @@ class Net:
         """HEAD the URL with full certificate verification; any 5xx counts as a failed sample."""
         parsed = urlparse(url)
         conn = http.client.HTTPSConnection(
-            parsed.hostname, parsed.port or 443, timeout=timeout, context=ssl.create_default_context()
+            parsed.hostname, parsed.port or 443, timeout=timeout, context=_tls_context()
         )
         try:
             path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
@@ -218,6 +251,125 @@ class Net:
             conn.close()
         if status >= 500:
             raise OSError(f"server answered {status}")
+
+    def timing(self, host: str, port: int | None, url: str | None, timeout: float) -> dict:
+        """Time the stages of one attempt: DNS, then (with a port) TCP connect, then (with a URL) TLS and first byte.
+
+        Returns {"dns_ms", ...}. Raises TimingError naming the stage that failed. The
+        certificate is fully verified. Nothing from `url` beyond host, port and path is used
+        in an error.
+        """
+        done: dict = {}
+        t0 = self.monotonic()
+        try:
+            address = self._resolve_bounded(host, timeout)
+        except (OSError, ValueError):
+            raise TimingError("dns", done) from None
+        t1 = self.monotonic()
+        done["dns_ms"] = _ms(t0, t1)
+        if port is None:
+            return done
+        try:
+            sock = socket.create_connection((address, port), timeout=timeout)
+        except (OSError, ValueError):
+            raise TimingError("connect", done) from None
+        t2 = self.monotonic()
+        done["connect_ms"] = _ms(t1, t2)
+        try:
+            if url is None:
+                return done
+            stage = "tls"
+            try:
+                sock = self._wrap_tls(sock, host, timeout)
+                t3 = self.monotonic()
+                done["tls_ms"] = _ms(t2, t3)
+                stage = "http"
+                sent = self.monotonic()
+                sock.sendall(self._head_request(url))
+                first = sock.recv(16)
+                t4 = self.monotonic()
+            except (OSError, ValueError):
+                raise TimingError(stage, done) from None
+            if not first.startswith(b"HTTP/"):
+                raise TimingError("http", done)
+            status = first.split(b" ")[1:2]
+            if status and status[0][:1] == b"5":
+                raise TimingError("http", done)
+            done["ttfb_ms"] = _ms(sent, t4)
+            return done
+        finally:
+            sock.close()
+
+    def _resolve_bounded(self, host: str, timeout: float) -> str:
+        """self.resolve() with a deadline; getaddrinfo itself cannot time out.
+
+        The lookup runs in a daemon thread. At most MAX_DNS_INFLIGHT lookups run at once
+        (a slot frees only when the resolver really returns), so a dead resolver cannot
+        pile up threads across cycles: further attempts fail at once with a timeout.
+        """
+        if not _DNS_SLOTS.acquire(blocking=False):
+            raise TimeoutError("resolver busy")
+        box: dict = {}
+        done = threading.Event()
+
+        def work():
+            try:
+                box["value"] = self.resolve(host)
+            except Exception as e:  # noqa: BLE001  # handed back to the caller
+                box["error"] = e
+            finally:
+                _DNS_SLOTS.release()
+                done.set()
+
+        started = False
+        try:
+            threading.Thread(target=work, name="netpulse-dns", daemon=True).start()
+            started = True
+        finally:
+            if not started:  # the thread owns the slot once it runs
+                _DNS_SLOTS.release()
+        if not done.wait(timeout):
+            raise TimeoutError("resolver timed out")
+        if "error" in box:
+            raise box["error"]
+        return box["value"]
+
+    @staticmethod
+    def _wrap_tls(sock, host: str, timeout: float):
+        wrapped = None
+        try:
+            wrapped = _tls_context().wrap_socket(sock, server_hostname=host)
+            return wrapped
+        finally:
+            if wrapped is None:  # any failure, interrupts included, must not leak the plain socket
+                sock.close()
+
+    @staticmethod
+    def _head_request(url: str) -> bytes:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        if parsed.port not in (None, 443):
+            host = f"{host}:{parsed.port}"
+        path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+        return f"HEAD {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: netpulse-probe\r\nConnection: close\r\n\r\n".encode("ascii", "ignore")
+
+
+def _ms(start: float, end: float) -> float:
+    return (end - start) * 1000.0
+
+
+class TimingError(Exception):
+    """A timing attempt failed at `stage`; `partial` holds the stages that finished first.
+
+    The message is only the stage name: the underlying error can embed a URL.
+    """
+
+    def __init__(self, stage: str, partial: dict):
+        super().__init__(stage)
+        self.stage = stage
+        self.partial = partial
 
 
 def icmp_available(net: Net) -> bool:
@@ -311,6 +463,27 @@ class Prober:
                 print(f"  {target.kind} {target.label}: loss {stats['loss_pct']}%, avg {_fmt(stats['rtt_avg_ms'])} ms")
             except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
                 print(f"Error probing {target.label}: {type(e).__name__}: {_scrub(str(e), target)}")
+            if self.config.timing:
+                self._run_timing(target)
+
+    def _run_timing(self, target: Target):
+        """One timing attempt for a target; success and failure both become a point."""
+        tags = {"target": target.label, "kind": target.kind, "host": target.host}
+        port = None if target.kind == "icmp" else target.port
+        url = target.url if target.kind == "https" else None
+        try:
+            try:
+                fields = {**self.net.timing(target.host, port, url, self.config.timeout), "error": 0}
+            except TimingError as e:
+                fields = {**e.partial, "error": 1, "error_stage": e.stage}
+            except Exception:  # noqa: BLE001  # a bug in one probe must still show as an outage point
+                fields = {"error": 1, "error_stage": "unknown"}
+            self.writer.write_point("probe_timing", tags, fields)
+            shown = ", ".join(f"{k[:-3]} {v:.1f}" for k, v in fields.items() if k.endswith("_ms"))
+            status = f"FAILED at {fields['error_stage']}" if fields["error"] else "ok"
+            print(f"  timing {target.label}: {status}{': ' + shown + ' ms' if shown else ''}")
+        except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
+            print(f"Error writing timing for {target.label}: {type(e).__name__}: {_scrub(str(e), target)}")
 
     def run_forever(self, should_stop=lambda: False):
         """Run a cycle every interval, sleeping out whatever the cycle left of it."""
@@ -353,6 +526,7 @@ def main(argv: list[str] | None = None):
     print("=" * 60)
     print(f"Targets: {', '.join(f'{t.kind}:{t.label}' for t in config.targets)}")
     print(f"Interval: {config.interval}s, samples per burst: {config.count}, timeout: {config.timeout}s")
+    print(f"DNS/connect/TLS/first-byte timing: {'on' if config.timing else 'off'}")
     print("=" * 60)
 
     if not wait_for_influxdb():
