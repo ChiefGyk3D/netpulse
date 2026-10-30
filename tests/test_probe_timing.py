@@ -23,6 +23,11 @@ class TimingNet(FakeNet):
         return result
 
 
+class StubIcmp:
+    def close(self):
+        pass
+
+
 def timing_prober(fake_writer, targets, results, timing=True):
     cfg = probe.ProbeConfig(targets=probe.parse_targets(targets), interval=60, count=1, timeout=1.0, timing=timing)
     return probe.Prober(cfg, fake_writer, TimingNet(results))
@@ -82,7 +87,7 @@ def test_timing_tcp_and_icmp_targets_ask_only_for_their_stages(fake_writer):
         [{"dns_ms": 1.0, "connect_ms": 2.0}, {"dns_ms": 3.0}],
     )
     net = p.net
-    net.icmp_socket = lambda: type("S", (), {"close": lambda self: None})()
+    net.icmp_socket = StubIcmp
     p = probe.Prober(p.config, fake_writer, net)
     net.outcomes = [10]
     net.resolve = lambda host: "192.0.2.1"
@@ -234,7 +239,7 @@ def stub_net(monkeypatch, *, resolve=None, connect=None, ctx=None, plain=None):
 
     monkeypatch.setattr(probe.socket, "create_connection", create)
     if ctx is not None:
-        monkeypatch.setattr(probe.ssl, "create_default_context", lambda: ctx)
+        monkeypatch.setattr(probe, "_tls_context", lambda: ctx)
     return net, seen
 
 
@@ -354,3 +359,45 @@ def test_net_timing_dns_resolver_error_is_still_a_dns_error(monkeypatch):
     with pytest.raises(probe.TimingError) as exc:
         net.timing("example.test", None, None, 1.0)
     assert exc.value.stage == "dns"
+
+
+def test_tls_context_verifies_and_refuses_old_protocols():
+    ctx = probe._tls_context()
+    assert ctx.minimum_version >= probe.ssl.TLSVersion.TLSv1_2
+    assert ctx.verify_mode == probe.ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+
+
+def test_net_timing_uses_the_hardened_context(monkeypatch):
+    seen = []
+    real = probe._tls_context
+
+    def spy():
+        seen.append(real())
+        return StubCtx(StubSock())
+
+    net, _seen = stub_net(monkeypatch)
+    monkeypatch.setattr(probe, "_tls_context", spy)
+    net.timing("example.test", 443, "https://example.test/", 2.0)
+    assert len(seen) == 1
+
+
+def test_net_timing_releases_the_dns_slot_when_the_thread_cannot_start(monkeypatch):
+    import threading
+
+    real_thread = threading.Thread
+
+    class Boom:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    net, _seen = stub_net(monkeypatch)
+    monkeypatch.setattr(probe.threading, "Thread", Boom)
+    for _ in range(probe.MAX_DNS_INFLIGHT + 2):  # a leaked slot would turn these into "busy"
+        with pytest.raises(RuntimeError, match="start new thread"):
+            net._resolve_bounded("example.test", 1.0)
+    monkeypatch.setattr(probe.threading, "Thread", real_thread)
+    assert net._resolve_bounded("example.test", 1.0) == "192.0.2.7"

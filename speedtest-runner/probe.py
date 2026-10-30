@@ -204,6 +204,16 @@ def build_echo_request(ident: int, seq: int) -> bytes:
     return struct.pack("!BBHHH", ICMP_ECHO_REQUEST, 0, checksum, ident, seq) + ICMP_PAYLOAD
 
 
+def _tls_context() -> ssl.SSLContext:
+    """A verifying client context that refuses anything older than TLS 1.2."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_default_certs()
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = True
+    return ctx
+
+
 _DNS_SLOTS = threading.BoundedSemaphore(MAX_DNS_INFLIGHT)
 
 
@@ -231,7 +241,7 @@ class Net:
         """HEAD the URL with full certificate verification; any 5xx counts as a failed sample."""
         parsed = urlparse(url)
         conn = http.client.HTTPSConnection(
-            parsed.hostname, parsed.port or 443, timeout=timeout, context=ssl.create_default_context()
+            parsed.hostname, parsed.port or 443, timeout=timeout, context=_tls_context()
         )
         try:
             path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
@@ -305,17 +315,19 @@ class Net:
         def work():
             try:
                 box["value"] = self.resolve(host)
-            except BaseException as e:  # noqa: BLE001  # handed back to the caller
+            except Exception as e:  # noqa: BLE001  # handed back to the caller
                 box["error"] = e
             finally:
                 _DNS_SLOTS.release()
                 done.set()
 
+        started = False
         try:
             threading.Thread(target=work, name="netpulse-dns", daemon=True).start()
-        except BaseException:
-            _DNS_SLOTS.release()
-            raise
+            started = True
+        finally:
+            if not started:  # the thread owns the slot once it runs
+                _DNS_SLOTS.release()
         if not done.wait(timeout):
             raise TimeoutError("resolver timed out")
         if "error" in box:
@@ -324,11 +336,13 @@ class Net:
 
     @staticmethod
     def _wrap_tls(sock, host: str, timeout: float):
+        wrapped = None
         try:
-            return ssl.create_default_context().wrap_socket(sock, server_hostname=host)
-        except BaseException:
-            sock.close()
-            raise
+            wrapped = _tls_context().wrap_socket(sock, server_hostname=host)
+            return wrapped
+        finally:
+            if wrapped is None:  # any failure, interrupts included, must not leak the plain socket
+                sock.close()
 
     @staticmethod
     def _head_request(url: str) -> bytes:
