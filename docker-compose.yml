@@ -7,7 +7,7 @@
 services:
   influxdb:
     # influxdb:2.7.12 - Dependabot moves the tag and the digest together.
-    image: influxdb:2.9.0@sha256:05ea1901ea421acf031b74e65b737fc911500e7f61189380596f84da18963fd1
+    image: influxdb:2.9.1@sha256:a450f6faf9573e6c2e96a0f575885ae8b7387cc87e4de94599e247ebfa3ac417
     container_name: netpulse-influxdb
     restart: unless-stopped
     security_opt:
