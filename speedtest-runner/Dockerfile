@@ -42,7 +42,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=25.3" "setuptools>=80" \
     && pip uninstall -y pip
 
 # Copy application
-COPY speedtest_runner.py .
+COPY speedtest_runner.py probe.py ./
 
 # Dedicated non-root user. UID/GID 1000. The runner persists its ISP state under
 # /data (the netpulse-state volume, NETPULSE_STATE_FILE=/data/state.json), and
@@ -53,5 +53,5 @@ RUN groupadd --gid 1000 netpulse \
     && chown -R netpulse:netpulse /app /data
 USER 1000:1000
 
-# Run the speedtest runner
+# Run the speedtest runner (the probe service overrides CMD: python -u probe.py)
 CMD ["python", "-u", "speedtest_runner.py"]

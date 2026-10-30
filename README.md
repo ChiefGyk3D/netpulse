@@ -234,6 +234,49 @@ sudo ./setup.sh --local --influxdb-v1 --influxdb-user admin --influxdb-pass pass
 | `INFLUXDB_PASSWORD` | - | InfluxDB initial admin password (required for Docker; `setup.sh` generates it) |
 | `NETPULSE_BIND_ADDR` | `127.0.0.1` | Address the InfluxDB and Grafana ports bind to |
 
+### Continuous Probe (optional)
+
+A separate, opt-in service that measures packet loss, latency and jitter all
+day with small probes, so a flaky link shows up between speedtests. It writes a
+`probe` measurement (one point per target per cycle) to the same InfluxDB 1.x or
+2.x the speedtest runner uses, and does not change how the speedtest runner
+behaves.
+
+```bash
+# Docker: the probe service sits behind a compose profile
+docker compose --profile probe up -d
+
+# Local: run it beside the runner, same environment file
+python speedtest-runner/probe.py          # daemon
+python speedtest-runner/probe.py --once   # a single cycle
+```
+
+Each cycle sends a short burst (`PROBE_COUNT` samples) to every target and
+writes `sent`, `received`, `loss_pct`, `rtt_min_ms`, `rtt_avg_ms`, `rtt_max_ms`
+and `jitter_ms` (the mean difference between consecutive samples), tagged
+`target`, `kind` (`icmp`, `tcp`, `https`) and `host`. With the defaults that is
+one burst per target per minute.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROBE_TARGETS` | `icmp:1.1.1.1,tcp:1.1.1.1:443,https:https://www.cloudflare.com/` | Comma-separated targets: `icmp:HOST`, `tcp:HOST[:PORT]` (port defaults to 443), `https:URL`. The defaults are public, well-known targets; replace them with your own |
+| `PROBE_INTERVAL` | `60` | Seconds between bursts (minimum 10) |
+| `PROBE_COUNT` | `5` | Samples per burst (1 to 20) |
+| `PROBE_TIMEOUT` | `2` | Seconds to wait for each sample |
+
+The probe refuses to start if the targets, count and timeout could not finish
+inside one interval.
+
+**Privileges.** ICMP uses an unprivileged datagram socket, not a raw socket, so
+the container keeps `cap_drop: ALL` and gains no capability. Linux allows that
+socket only for groups in `net.ipv4.ping_group_range`; Docker opens that range
+inside containers by default. If the kernel refuses (a locked-down host, or a
+non-Docker install with a narrow range), ICMP targets automatically switch to a
+TCP connect on port 443 and the log says so. For ICMP on a local install either
+widen the range (`sysctl net.ipv4.ping_group_range="0 2147483647"`) or accept
+the TCP fallback. HTTPS probes verify certificates and send only a `HEAD`
+request; a 5xx answer counts as a lost sample.
+
 ### Recommended Intervals
 
 | Interval | Seconds | Use Case |

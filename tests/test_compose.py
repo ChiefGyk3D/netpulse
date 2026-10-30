@@ -115,6 +115,40 @@ def test_runner_is_locked_down():
     assert "healthcheck" in runner
 
 
+def test_probe_is_opt_in_and_locked_down():
+    probe = load_compose()["services"]["probe"]
+    assert probe.get("profiles") == ["probe"], "the probe must not start unless asked"
+    assert probe.get("cap_drop") == ["ALL"]
+    assert "cap_add" not in probe, "ICMP uses an unprivileged socket; no capability is needed"
+    assert "no-new-privileges:true" in probe.get("security_opt", [])
+    assert probe.get("read_only") is True
+    assert probe.get("tmpfs")
+    assert "healthcheck" in probe
+    assert probe["command"][-1] == "probe.py"
+
+
+def test_probe_settings_are_documented_in_env_example():
+    probe = load_compose()["services"]["probe"]
+    example = ENV_EXAMPLE.read_text()
+    for key in env_map(probe):
+        if key.startswith("PROBE_"):
+            assert re.search(r"^#?\s*" + key + "=", example, re.MULTILINE), key
+
+
+def test_probe_compose_defaults_match_the_module():
+    import probe as probe_module
+
+    env = env_map(load_compose()["services"]["probe"])
+    defaults = {
+        "PROBE_TARGETS": probe_module.DEFAULT_TARGETS,
+        "PROBE_INTERVAL": str(probe_module.DEFAULT_INTERVAL),
+        "PROBE_COUNT": str(probe_module.DEFAULT_COUNT),
+        "PROBE_TIMEOUT": str(int(probe_module.DEFAULT_TIMEOUT)),
+    }
+    for key, value in defaults.items():
+        assert env[key] == "${" + key + ":-" + value + "}", key
+
+
 def test_runner_state_path_is_writable_volume():
     runner = load_compose()["services"]["speedtest-runner"]
     state = env_map(runner)["NETPULSE_STATE_FILE"]

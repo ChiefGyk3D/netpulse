@@ -103,6 +103,52 @@ services:
     networks:
       - netpulse-network
 
+  # Continuous loss/latency/jitter probe. Opt-in: start it with
+  #   docker compose --profile probe up -d
+  # Same image and the same lockdown as the runner. ICMP uses an unprivileged
+  # datagram socket, so it needs no added capability; if the kernel does not
+  # allow it, ICMP targets fall back to TCP port 443.
+  probe:
+    profiles:
+      - probe
+    build:
+      context: ./speedtest-runner
+      dockerfile: Dockerfile
+    command: ["python", "-u", "probe.py"]
+    container_name: netpulse-probe
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0 if b'probe.py' in open('/proc/1/cmdline', 'rb').read() else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    environment:
+      - INFLUXDB_VERSION=${INFLUXDB_VERSION:-2}
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:?set INFLUXDB_TOKEN in .env}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-netpulse}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-netpulse}
+      - PROBE_TARGETS=${PROBE_TARGETS:-icmp:1.1.1.1,tcp:1.1.1.1:443,https:https://www.cloudflare.com/}
+      - PROBE_INTERVAL=${PROBE_INTERVAL:-60}
+      - PROBE_COUNT=${PROBE_COUNT:-5}
+      - PROBE_TIMEOUT=${PROBE_TIMEOUT:-2}
+      - TZ=${TZ:-America/New_York}
+    depends_on:
+      - influxdb
+    networks:
+      - netpulse-network
+
 volumes:
   influxdb-data:
   influxdb-config:
