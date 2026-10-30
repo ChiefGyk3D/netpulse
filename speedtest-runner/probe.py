@@ -63,13 +63,27 @@ class ProbeConfig:
     timeout: float
 
 
+def _redact(spec: str) -> str:
+    """The spec as it may appear in an error: anything that can carry userinfo, a query or a fragment is hidden."""
+    return "<redacted>" if any(c in spec for c in "@?#") else repr(spec)
+
+
+def _https_label(parsed) -> str:
+    """host[:port]/path, from an already-parsed URL. Never userinfo, query or fragment."""
+    host = parsed.hostname
+    if ":" in host:  # an IPv6 literal needs its brackets back
+        host = f"[{host}]"
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"{host}{port}{parsed.path or '/'}"
+
+
 def parse_target(spec: str) -> Target:
     """Parse "icmp:HOST", "tcp:HOST[:PORT]" or "https:URL" into a Target."""
     kind, _, rest = spec.strip().partition(":")
     kind = kind.lower()
     rest = rest.strip()
     if kind not in ("icmp", "tcp", "https") or not rest:
-        raise ConfigError(f"PROBE_TARGETS entry must look like icmp:HOST, tcp:HOST[:PORT] or https:URL, got {spec!r}")
+        raise ConfigError(f"PROBE_TARGETS entry must look like icmp:HOST, tcp:HOST[:PORT] or https:URL, got {_redact(spec)}")
     if kind == "icmp":
         return Target("icmp", rest, None, rest)
     if kind == "tcp":
@@ -79,14 +93,20 @@ def parse_target(spec: str) -> Target:
         try:
             port = int(port_text)
         except ValueError:
-            raise ConfigError(f"PROBE_TARGETS tcp port must be a number, got {spec!r}") from None
+            raise ConfigError(f"PROBE_TARGETS tcp port must be a number, got {_redact(spec)}") from None
         if not host or not 0 < port < 65536:
-            raise ConfigError(f"PROBE_TARGETS tcp entry needs a host and a port from 1 to 65535, got {spec!r}")
+            raise ConfigError(f"PROBE_TARGETS tcp entry needs a host and a port from 1 to 65535, got {_redact(spec)}")
         return Target("tcp", host, port, f"{host}:{port}")
-    parsed = urlparse(rest)
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise ConfigError(f"PROBE_TARGETS https entry must be an https:// URL, got {spec!r}")
-    return Target("https", parsed.hostname, parsed.port or 443, rest.removeprefix("https://"), rest)
+    try:
+        parsed = urlparse(rest)
+        host, port, label = parsed.hostname, parsed.port or 443, None
+        if parsed.scheme == "https" and host:
+            label = _https_label(parsed)
+    except ValueError:  # a malformed port or bracket; the message must not echo the URL
+        label = None
+    if label is None:
+        raise ConfigError(f"PROBE_TARGETS https entry must be a valid https:// URL, got {_redact(spec)}")
+    return Target("https", host, port, label, rest)
 
 
 def parse_targets(raw: str) -> list[Target]:
@@ -256,7 +276,9 @@ def run_target(net: Net, target: Target, count: int, timeout: float) -> dict:
                 else:
                     net.https_head(target.url, timeout)
                 rtt = (net.monotonic() - start) * 1000.0
-            except OSError:  # includes timeouts, refusals, TLS and name errors
+            except (OSError, http.client.HTTPException, ValueError):
+                # timeouts, refusals, TLS and name errors; http.client and URL
+                # errors can embed the request URL, so none of it is logged
                 rtt = None
         if rtt is not None:
             rtts.append(rtt)
@@ -288,7 +310,7 @@ class Prober:
                 self.writer.write_point("probe", tags, stats)
                 print(f"  {target.kind} {target.label}: loss {stats['loss_pct']}%, avg {_fmt(stats['rtt_avg_ms'])} ms")
             except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
-                print(f"Error probing {target.label}: {e}")
+                print(f"Error probing {target.label}: {type(e).__name__}: {_scrub(str(e), target)}")
 
     def run_forever(self, should_stop=lambda: False):
         """Run a cycle every interval, sleeping out whatever the cycle left of it."""
@@ -296,6 +318,17 @@ class Prober:
             started = self.net.monotonic()
             self.run_cycle()
             self.net.sleep(max(0.0, self.config.interval - (self.net.monotonic() - started)))
+
+
+def _scrub(text: str, target: Target) -> str:
+    """Keep the request URL, with its userinfo and query, out of a log line."""
+    if target.url:
+        text = text.replace(target.url, target.label)
+        parsed = urlparse(target.url)
+        for secret in (parsed.password, parsed.username, parsed.query, parsed.fragment):
+            if secret:
+                text = text.replace(secret, "<redacted>")
+    return text
 
 
 def _fmt(value) -> str:

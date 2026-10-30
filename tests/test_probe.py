@@ -538,3 +538,96 @@ def test_main_exits_1_when_influxdb_never_ready(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         probe.main(["--once"])
     assert exc.value.code == 1
+
+
+# ------------------------------------------------ credential / token redaction
+
+SECRET_URL = "https://user:secret@example.test:8443/health?token=abc#frag"
+LEAKS = ("secret", "user", "token", "abc", "frag")
+
+
+def _assert_clean(text):
+    for word in LEAKS:
+        assert word not in text, f"{word!r} leaked in {text!r}"
+
+
+def test_https_label_has_only_host_port_path():
+    t = probe.parse_target(f"https:{SECRET_URL}")
+    assert t.label == "example.test:8443/health"
+    assert (t.host, t.port, t.url) == ("example.test", 8443, SECRET_URL)
+
+
+@pytest.mark.parametrize(
+    "spec,label",
+    [
+        ("https:https://example.test", "example.test/"),
+        ("https:https://example.test/", "example.test/"),
+        ("https:https://example.test:443/x", "example.test:443/x"),
+        ("https:https://u:p@example.test?q=1", "example.test/"),
+        ("https:https://[2001:db8::1]:8443/a?k=v", "[2001:db8::1]:8443/a"),
+    ],
+)
+def test_https_label_forms(spec, label):
+    assert probe.parse_target(spec).label == label
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "https:http://user:secret@example.test/?token=abc",
+        "https:https://user:secret@/?token=abc",
+        "https:https://user:secret@example.test:notaport/?token=abc",
+        "https:https://user:secret@[bad/?token=abc",
+        "tcp:user:secret@example.test:notaport",
+        "tcp:user:secret@example.test:99999",
+        "icmp:",
+    ],
+)
+def test_config_errors_do_not_echo_credentials(spec):
+    with pytest.raises(probe.ConfigError) as exc:
+        probe.parse_target(spec)
+    _assert_clean(str(exc.value))
+
+
+def test_bad_target_in_list_error_is_clean():
+    with pytest.raises(probe.ConfigError) as exc:
+        probe.parse_targets("tcp:a.test:80,https:http://user:secret@x.test/?token=abc")
+    _assert_clean(str(exc.value))
+
+
+def test_cycle_output_and_tag_are_clean(fake_writer, capsys):
+    target = probe.parse_target(f"https:{SECRET_URL}")
+    config = probe.ProbeConfig(targets=[target], interval=60, count=2, timeout=1.0)
+    probe.Prober(config, fake_writer, FakeNet([10, 12])).run_cycle()
+    _m, tags, _f = fake_writer.points[0]
+    assert tags["target"] == "example.test:8443/health"
+    _assert_clean(repr(tags) + capsys.readouterr().out)
+
+
+def test_https_http_client_errors_are_a_lost_sample_and_clean(fake_writer, capsys):
+    import http.client
+
+    class Boom(FakeNet):
+        def https_head(self, url, timeout):
+            raise http.client.InvalidURL(f"URL can't contain control characters. {url!r}")
+
+    target = probe.parse_target(f"https:{SECRET_URL}")
+    out = probe.run_target(Boom(), target, count=2, timeout=1.0)
+    assert out["loss_pct"] == 100.0
+
+    class Weird(FakeNet):
+        def https_head(self, url, timeout):
+            raise RuntimeError(f"unexpected for {url}")
+
+    config = probe.ProbeConfig(targets=[target], interval=60, count=1, timeout=1.0)
+    probe.Prober(config, fake_writer, Weird()).run_cycle()
+    _assert_clean(capsys.readouterr().out)
+
+
+def test_main_banner_is_clean(monkeypatch, capsys):
+    monkeypatch.setenv("PROBE_TARGETS", f"https:{SECRET_URL}")
+    monkeypatch.setattr(probe, "wait_for_influxdb", lambda: False)
+    with pytest.raises(SystemExit):
+        probe.main(["--once"])
+    cap = capsys.readouterr()
+    _assert_clean(cap.out + cap.err)
