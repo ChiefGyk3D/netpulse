@@ -27,6 +27,7 @@ import socket
 import ssl
 import struct
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -43,6 +44,7 @@ MIN_INTERVAL = 10  # a floor, so a typo cannot turn this into a flood
 MAX_COUNT = 20
 MAX_TIMEOUT = 30.0
 SAMPLE_GAP = 0.2  # seconds between samples in a burst
+MAX_DNS_INFLIGHT = 4  # resolver threads that may be stuck at once; more attempts fail fast
 TIMING_STAGES = 4  # dns, connect, tls, ttfb: each may use up to one timeout
 
 ICMP_ECHO_REQUEST = 8
@@ -202,6 +204,9 @@ def build_echo_request(ident: int, seq: int) -> bytes:
     return struct.pack("!BBHHH", ICMP_ECHO_REQUEST, 0, checksum, ident, seq) + ICMP_PAYLOAD
 
 
+_DNS_SLOTS = threading.BoundedSemaphore(MAX_DNS_INFLIGHT)
+
+
 class Net:
     """The network layer. Every socket the module opens goes through here, so tests replace it."""
 
@@ -247,7 +252,7 @@ class Net:
         done: dict = {}
         t0 = self.monotonic()
         try:
-            address = self.resolve(host)
+            address = self._resolve_bounded(host, timeout)
         except (OSError, ValueError):
             raise TimingError("dns", done) from None
         t1 = self.monotonic()
@@ -284,6 +289,38 @@ class Net:
             return done
         finally:
             sock.close()
+
+    def _resolve_bounded(self, host: str, timeout: float) -> str:
+        """self.resolve() with a deadline; getaddrinfo itself cannot time out.
+
+        The lookup runs in a daemon thread. At most MAX_DNS_INFLIGHT lookups run at once
+        (a slot frees only when the resolver really returns), so a dead resolver cannot
+        pile up threads across cycles: further attempts fail at once with a timeout.
+        """
+        if not _DNS_SLOTS.acquire(blocking=False):
+            raise TimeoutError("resolver busy")
+        box: dict = {}
+        done = threading.Event()
+
+        def work():
+            try:
+                box["value"] = self.resolve(host)
+            except BaseException as e:  # noqa: BLE001  # handed back to the caller
+                box["error"] = e
+            finally:
+                _DNS_SLOTS.release()
+                done.set()
+
+        try:
+            threading.Thread(target=work, name="netpulse-dns", daemon=True).start()
+        except BaseException:
+            _DNS_SLOTS.release()
+            raise
+        if not done.wait(timeout):
+            raise TimeoutError("resolver timed out")
+        if "error" in box:
+            raise box["error"]
+        return box["value"]
 
     @staticmethod
     def _wrap_tls(sock, host: str, timeout: float):

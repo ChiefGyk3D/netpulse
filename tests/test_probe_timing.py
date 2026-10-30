@@ -292,3 +292,65 @@ def test_net_timing_closes_the_plain_socket_on_a_tls_failure(monkeypatch):
     with pytest.raises(probe.TimingError):
         net.timing("example.test", 443, "https://example.test/", 2.0)
     assert plain.closed
+
+
+# ---------------------------------------------------------------- the DNS stage honors the timeout
+
+
+def test_net_timing_dns_hang_is_a_dns_error_within_the_timeout(monkeypatch):
+    import threading
+    import time
+
+    release = threading.Event()
+    net, _seen = stub_net(monkeypatch, resolve=lambda h: release.wait(5) or "192.0.2.7")
+    net.monotonic = time.monotonic
+    started = time.monotonic()
+    try:
+        with pytest.raises(probe.TimingError) as exc:
+            net.timing("example.test", 443, None, 0.05)
+        assert time.monotonic() - started < 1.0
+        assert exc.value.stage == "dns" and exc.value.partial == {}
+    finally:
+        release.set()
+
+
+def test_net_timing_dns_threads_are_capped(monkeypatch):
+    import threading
+    import time
+
+    release = threading.Event()
+    calls = []
+
+    def hang(host):
+        calls.append(host)
+        release.wait(5)
+        return "192.0.2.7"
+
+    net, _seen = stub_net(monkeypatch, resolve=hang)
+    net.monotonic = time.monotonic
+    try:
+        for _ in range(probe.MAX_DNS_INFLIGHT + 6):
+            with pytest.raises(probe.TimingError) as exc:
+                net.timing("example.test", None, None, 0.01)
+            assert exc.value.stage == "dns"
+        time.sleep(0.05)
+        assert len(calls) == probe.MAX_DNS_INFLIGHT  # later attempts fail fast, no new threads
+    finally:
+        release.set()
+        time.sleep(0.1)  # let the stuck workers return their slots
+
+
+def test_net_timing_dns_slots_are_released_after_the_resolver_returns(monkeypatch):
+    import time
+
+    net, _seen = stub_net(monkeypatch)
+    net.monotonic = time.monotonic
+    for _ in range(probe.MAX_DNS_INFLIGHT * 3):
+        assert "dns_ms" in net.timing("example.test", None, None, 1.0)
+
+
+def test_net_timing_dns_resolver_error_is_still_a_dns_error(monkeypatch):
+    net, _seen = stub_net(monkeypatch, resolve=lambda h: _raise(OSError("nxdomain")))
+    with pytest.raises(probe.TimingError) as exc:
+        net.timing("example.test", None, None, 1.0)
+    assert exc.value.stage == "dns"
