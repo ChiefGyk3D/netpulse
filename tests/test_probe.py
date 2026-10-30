@@ -520,6 +520,7 @@ def test_main_once_runs_a_single_cycle(monkeypatch, fake_writer):
     monkeypatch.setattr(probe, "Net", lambda: FakeNet([5, 5]))
     monkeypatch.setenv("PROBE_TARGETS", "tcp:a.test")
     monkeypatch.setenv("PROBE_COUNT", "2")
+    monkeypatch.setenv("PROBE_TIMING", "0")  # the timing probe has its own tests
     probe.main(["--once"])
     assert len(fake_writer.points) == 1
     assert fake_writer.closed
