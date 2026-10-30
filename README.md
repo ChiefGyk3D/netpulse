@@ -119,6 +119,27 @@ If your install was initialised with the old default, its org **and** bucket are
 
 If your `.env` already sets `INFLUXDB_ORG` and `INFLUXDB_BUCKET`, the dashboard now reads the `netpulse` bucket, so that bucket must exist. New installs need nothing.
 
+### Upgrading InfluxDB or Grafana
+
+Snapshot the data volumes **before** you change an image pin. A newer InfluxDB rewrites the on-disk format when it opens a volume, and there is no way back from that without a copy. `influxd downgrade` does not reach 2.7, and an in-place downgrade of a volume that a newer 2.9.x has already opened fails.
+
+Stop the stack, then tar the `influxdb-data` and `influxdb-config` volumes into a dated file with owner-only permissions. Compose prefixes volume names with the project name (the directory name, `netpulse` by default); check with `docker volume ls`.
+
+```bash
+docker compose down
+umask 077
+docker run --rm \
+  -v netpulse_influxdb-data:/data:ro \
+  -v netpulse_influxdb-config:/config:ro \
+  -v "$PWD":/backup \
+  alpine tar czf "/backup/influxdb-volumes-$(date +%F).tar.gz" -C / data config
+chmod 0600 "influxdb-volumes-$(date +%F).tar.gz"
+```
+
+The snapshot holds your InfluxDB token and data, so keep it out of git and off shared storage.
+
+To roll back, restore the snapshot into the volumes and run the previous pinned images from git history (`git log -p docker-compose.yml`). Do not point an older image at a volume the newer one opened.
+
 ## Installation Methods
 
 ### Systemd Timer vs Docker Daemon

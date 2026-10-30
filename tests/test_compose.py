@@ -171,6 +171,34 @@ def test_image_guard_bites():
     assert DIGEST_RE.match("influxdb:2.7.12@sha256:" + "a" * 64)
 
 
+KNOWN_BAD_INFLUXDB_TAGS = {"2.9.0"}
+
+
+def influxdb_pin_problems(image):
+    """2.9.0 restart-loops on a fresh volume in setup mode (fixed in 2.9.1)."""
+    name, _, rest = image.partition(":")
+    tag, _, digest = rest.partition("@")
+    problems = []
+    if name != "influxdb":
+        return problems
+    if tag in KNOWN_BAD_INFLUXDB_TAGS:
+        problems.append(f"known-bad tag {tag}")
+    if not digest.startswith("sha256:"):
+        problems.append("not pinned by digest")
+    return problems
+
+
+def test_influxdb_pin_is_not_known_bad_2_9_0():
+    image = load_compose()["services"]["influxdb"]["image"]
+    assert influxdb_pin_problems(image) == [], image
+
+
+def test_influxdb_pin_guard_bites():
+    assert influxdb_pin_problems("influxdb:2.9.0@sha256:" + "a" * 64)
+    assert influxdb_pin_problems("influxdb:2.9.1")
+    assert not influxdb_pin_problems("influxdb:2.9.1@sha256:" + "a" * 64)
+
+
 PLUGIN_PREFIXES = ("GF_INSTALL_PLUGINS", "GF_PLUGINS_PREINSTALL")
 
 
