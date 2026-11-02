@@ -2,6 +2,8 @@
 # the separate bandit step from CI lost nothing. A future tests/ directory is
 # exempt from them because assert and hard-coded fixtures are what tests are
 # made of.
+target-version = "py310"   # the CI matrix still includes Python 3.10
+
 [lint]
 extend-select = ["S"]
 

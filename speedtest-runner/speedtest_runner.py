@@ -369,7 +369,7 @@ class SpeedtestRunner:
         self.accept_speedtest_license()
         
         try:
-            print(f"[{datetime.now().isoformat()}] Starting speedtest...")  # noqa: DTZ005  # local wall-clock for log line
+            print(f"[{datetime.now().isoformat()}] Starting speedtest...")  # local wall-clock for log line
             result = subprocess.run(
                 ["speedtest", "--format=json", "--accept-license", "--accept-gdpr"],  # noqa: S607  # resolved on PATH; setup.sh installs it via apt, dnf or pacman, so the location varies
                 capture_output=True,
@@ -510,7 +510,7 @@ class SpeedtestRunner:
     def run_test_cycle(self):
         """Run a complete test cycle: get IP info, run speedtest, log results."""
         print(f"\n{'='*60}")
-        print(f"[{datetime.now().isoformat()}] Starting test cycle")  # noqa: DTZ005  # local wall-clock for log line
+        print(f"[{datetime.now().isoformat()}] Starting test cycle")  # local wall-clock for log line
         print(f"{'='*60}")
         
         # Get current IP/ISP information
@@ -540,7 +540,7 @@ class SpeedtestRunner:
             except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
                 print(f"Error logging speedtest failure: {e}")
         
-        print(f"[{datetime.now().isoformat()}] Test cycle complete")  # noqa: DTZ005  # local wall-clock for log line
+        print(f"[{datetime.now().isoformat()}] Test cycle complete")  # local wall-clock for log line
         if self.interval:
             print(f"Next test in {self.interval} seconds ({self.interval/60:.1f} minutes)")
 
