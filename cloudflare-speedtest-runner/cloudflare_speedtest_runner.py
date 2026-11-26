@@ -130,25 +130,10 @@ class ISPTracker:
                     ip_info["isp"] = parts[1] if len(parts) > 1 else org
                 else:
                     ip_info["isp"] = org
+            else:
+                print(f"ipinfo.io returned HTTP {response.status_code}; no IP reported this cycle")
         except Exception as e:
-            print(f"Error fetching from ipinfo.io: {e}")
-
-        # Fallback to ipapi.co if ipinfo.io failed. ip-api.com is HTTP-only on
-        # its free tier (https returns 403), so it is not used: lookups must be HTTPS.
-        if not ip_info["ip"]:
-            try:
-                response = requests.get("https://ipapi.co/json/", timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    ip_info["ip"] = data.get("ip")
-                    ip_info["isp"] = data.get("org")
-                    ip_info["asn"] = data.get("asn")
-                    ip_info["org"] = data.get("org")
-                    ip_info["city"] = data.get("city")
-                    ip_info["region"] = data.get("region")
-                    ip_info["country"] = data.get("country_code")
-            except Exception as e:
-                print(f"Error fetching from ipapi.co: {e}")
+            print(f"Error fetching from ipinfo.io: {e}; no IP reported this cycle")
 
         # Infer connection type based on ISP name keywords
         if ip_info["isp"]:
