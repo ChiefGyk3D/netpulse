@@ -106,13 +106,47 @@ def test_port_guard_bites():
     assert unbound_ports({"a": {"ports": ["0.0.0.0:80:80"]}}) != []
 
 
+def lockdown_problems(svc):
+    """Lockdown items a runner service is missing (empty when fully locked down)."""
+    problems = []
+    if svc.get("cap_drop") != ["ALL"]:
+        problems.append("cap_drop")
+    if "no-new-privileges:true" not in svc.get("security_opt", []):
+        problems.append("no-new-privileges")
+    if svc.get("read_only") is not True:
+        problems.append("read_only")
+    if not svc.get("tmpfs"):
+        problems.append("tmpfs")
+    if "healthcheck" not in svc:
+        problems.append("healthcheck")
+    return problems
+
+
 def test_runner_is_locked_down():
     runner = load_compose()["services"]["speedtest-runner"]
-    assert runner.get("cap_drop") == ["ALL"]
-    assert "no-new-privileges:true" in runner.get("security_opt", [])
-    assert runner.get("read_only") is True
-    assert runner.get("tmpfs"), "a read-only root needs tmpfs for scratch paths"
-    assert "healthcheck" in runner
+    assert lockdown_problems(runner) == []
+
+
+def test_cloudflare_runner_is_locked_down():
+    services = load_compose()["services"]
+    assert "cloudflare-runner" in services
+    assert lockdown_problems(services["cloudflare-runner"]) == []
+    assert services["cloudflare-runner"].get("profiles") == ["enhanced"]
+
+
+def test_lockdown_guard_bites():
+    assert lockdown_problems({}) == [
+        "cap_drop", "no-new-privileges", "read_only", "tmpfs", "healthcheck",
+    ]
+    locked = {
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "read_only": True,
+        "tmpfs": ["/tmp"],
+        "healthcheck": {"test": ["CMD", "true"]},
+    }
+    assert lockdown_problems(locked) == []
+    assert lockdown_problems({**locked, "read_only": False}) == ["read_only"]
 
 
 def test_probe_is_opt_in_and_locked_down():

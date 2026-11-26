@@ -56,6 +56,7 @@ services:
     networks:
       - netpulse-network
 
+  # ─── Simplified runner: Ookla-based speed test (always runs) ──────────────
   speedtest-runner:
     build:
       context: ./speedtest-runner
@@ -93,6 +94,8 @@ services:
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-netpulse}
       # General settings
       - SPEEDTEST_INTERVAL=${SPEEDTEST_INTERVAL:-1800}
+      - SPEEDTEST_CRON=${SPEEDTEST_CRON:-}
+      - HIDE_EXTERNAL_IP=${HIDE_EXTERNAL_IP:-false}
       - TZ=${TZ:-America/New_York}
       - NETPULSE_STATE_FILE=/data/state.json
       - HOME=/tmp
@@ -145,6 +148,58 @@ services:
       - PROBE_TIMEOUT=${PROBE_TIMEOUT:-2}
       - PROBE_TIMING=${PROBE_TIMING:-1}
       - TZ=${TZ:-America/New_York}
+    depends_on:
+      - influxdb
+    networks:
+      - netpulse-network
+
+  # ─── Enhanced runner: Cloudflare-based speed test (opt-in via profile) ─────
+  # Same secret rule as the other services (required token, no default) and the
+  # same lockdown as the runner. Start it with: docker compose --profile enhanced up -d
+  cloudflare-runner:
+    profiles:
+      - enhanced
+    build:
+      context: ./cloudflare-speedtest-runner
+      dockerfile: Dockerfile
+    container_name: netpulse-cloudflare-runner
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0 if b'cloudflare_speedtest_runner' in open('/proc/1/cmdline', 'rb').read() else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    environment:
+      # InfluxDB version: "1" or "2" (default: 2)
+      - INFLUXDB_VERSION=${INFLUXDB_VERSION:-2}
+      - INFLUXDB_URL=http://influxdb:8086
+      # InfluxDB 2.x settings (token-based)
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:?set INFLUXDB_TOKEN in .env}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-netpulse}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-netpulse}
+      # Scheduling: interval (seconds) or cron expression
+      # Default: every 6 hours.  Clock-based example: "0 3,9,15,21 * * *"
+      - SPEEDTEST_INTERVAL=${CF_SPEEDTEST_INTERVAL:-21600}
+      - SPEEDTEST_CRON=${CF_SPEEDTEST_CRON:-}
+      # Privacy: set to "true" to mask the external IP in InfluxDB/Grafana
+      - HIDE_EXTERNAL_IP=${HIDE_EXTERNAL_IP:-false}
+      - TZ=${TZ:-America/New_York}
+      - NETPULSE_STATE_FILE=/data/cf_state.json
+      # Cloudflare test tuning
+      - CF_LATENCY_SAMPLES=${CF_LATENCY_SAMPLES:-20}
+    volumes:
+      - netpulse-state:/data
     depends_on:
       - influxdb
     networks:
