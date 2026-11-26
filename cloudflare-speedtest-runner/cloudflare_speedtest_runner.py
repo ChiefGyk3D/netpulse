@@ -133,21 +133,22 @@ class ISPTracker:
         except Exception as e:
             print(f"Error fetching from ipinfo.io: {e}")
 
-        # Fallback to ip-api.com if ipinfo.io failed
+        # Fallback to ipapi.co if ipinfo.io failed. ip-api.com is HTTP-only on
+        # its free tier (https returns 403), so it is not used: lookups must be HTTPS.
         if not ip_info["ip"]:
             try:
-                response = requests.get("http://ip-api.com/json", timeout=10)
+                response = requests.get("https://ipapi.co/json/", timeout=10)
                 if response.status_code == 200:
                     data = response.json()
-                    ip_info["ip"] = data.get("query")
-                    ip_info["isp"] = data.get("isp")
-                    ip_info["asn"] = data.get("as", "").split(" ")[0] if data.get("as") else None
+                    ip_info["ip"] = data.get("ip")
+                    ip_info["isp"] = data.get("org")
+                    ip_info["asn"] = data.get("asn")
                     ip_info["org"] = data.get("org")
                     ip_info["city"] = data.get("city")
-                    ip_info["region"] = data.get("regionName")
-                    ip_info["country"] = data.get("countryCode")
+                    ip_info["region"] = data.get("region")
+                    ip_info["country"] = data.get("country_code")
             except Exception as e:
-                print(f"Error fetching from ip-api.com: {e}")
+                print(f"Error fetching from ipapi.co: {e}")
 
         # Infer connection type based on ISP name keywords
         if ip_info["isp"]:
