@@ -18,3 +18,5 @@ requests==2.34.2
 
 # Scheduling (daemon mode only)
 schedule==1.2.2
+# Cron expressions for SPEEDTEST_CRON / CF_SPEEDTEST_CRON
+croniter==6.0.0

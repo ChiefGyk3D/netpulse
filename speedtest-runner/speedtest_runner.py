@@ -32,6 +32,10 @@ INFLUXDB_PASSWORD = os.getenv("INFLUXDB_PASSWORD", "")
 INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", "netpulse")
 
 DEFAULT_SPEEDTEST_INTERVAL = 1800  # 30 minutes
+SPEEDTEST_CRON = os.getenv("SPEEDTEST_CRON", "")  # e.g. "0 3,9,15,21 * * *"
+
+# Privacy: set to "true" to mask external IP in stored data
+HIDE_EXTERNAL_IP = os.getenv("HIDE_EXTERNAL_IP", "false").lower() in ("true", "1", "yes")
 
 
 class ConfigError(ValueError):
@@ -459,6 +463,11 @@ class SpeedtestRunner:
     def write_speedtest_result(self, result: dict, ip_info: dict, isp_change: dict):
         """Write speedtest results to InfluxDB."""
         try:
+            # Mask IP if privacy mode is enabled
+            external_ip = ip_info.get("ip") or result.get("external_ip") or "unknown"
+            if HIDE_EXTERNAL_IP:
+                external_ip = "hidden"
+
             # Main speedtest metrics
             tags = {
                 "server_name": result.get("server_name") or "unknown",
@@ -467,7 +476,7 @@ class SpeedtestRunner:
                 "isp": ip_info.get("isp") or result.get("isp") or "unknown",
                 "asn": ip_info.get("asn") or "unknown",
                 "connection_type": ip_info.get("connection_type") or "unknown",
-                "external_ip": ip_info.get("ip") or result.get("external_ip") or "unknown",
+                "external_ip": external_ip,
             }
             # A value the speedtest did not report stays None, and the writers
             # drop None, so a missing measurement is a gap rather than a fake 0.
@@ -495,7 +504,7 @@ class SpeedtestRunner:
                     "isp_changed": isp_change.get("isp_changed", False),
                     "asn_changed": isp_change.get("asn_changed", False),
                     "previous_ip": isp_change.get("previous_ip", ""),
-                    "current_ip": ip_info.get("ip", ""),
+                    "current_ip": "" if HIDE_EXTERNAL_IP else ip_info.get("ip", ""),
                     "event": 1,  # Marker for annotations
                 }
                 
@@ -515,7 +524,8 @@ class SpeedtestRunner:
         
         # Get current IP/ISP information
         ip_info = self.isp_tracker.get_ip_info()
-        print(f"  External IP: {ip_info.get('ip')}")
+        display_ip = "hidden" if HIDE_EXTERNAL_IP else ip_info.get("ip")
+        print(f"  External IP: {display_ip}")
         print(f"  ISP: {ip_info.get('isp')}")
         print(f"  ASN: {ip_info.get('asn')}")
         print(f"  Connection Type: {ip_info.get('connection_type')}")
@@ -567,6 +577,42 @@ def wait_for_influxdb():
     return False
 
 
+def get_scheduler(interval: int, cron_expr: str):
+    """
+    Determine scheduling mode.
+
+    When cron_expr is provided, runs at times defined by the cron expression.
+    Otherwise runs every `interval` seconds.
+    Returns ("cron", cron_expr) or ("interval", interval).
+    """
+    if cron_expr:
+        from croniter import croniter
+        if croniter.is_valid(cron_expr):
+            return "cron", cron_expr
+        print(f"Invalid SPEEDTEST_CRON expression '{cron_expr}'")
+        print(f"Falling back to interval-based scheduling ({interval}s)")
+    return "interval", interval
+
+
+def run_cron_scheduler(runner, cron_expr: str):
+    """Run tests on a cron schedule."""
+    from croniter import croniter
+
+    print(f"Running on cron schedule: {cron_expr}")
+    while True:
+        now = datetime.now()
+        cron = croniter(cron_expr, now)
+        next_run = cron.get_next(datetime)
+        wait_seconds = (next_run - datetime.now()).total_seconds()
+
+        if wait_seconds > 0:
+            print(f"Next run at {next_run.strftime('%Y-%m-%d %H:%M:%S')} "
+                  f"(in {wait_seconds/60:.1f} minutes)")
+            time.sleep(wait_seconds)
+
+        runner.run_test_cycle()
+
+
 def main(argv: list[str] | None = None):
     """Main entry point."""
     import argparse
@@ -576,9 +622,10 @@ def main(argv: list[str] | None = None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                  # Run as daemon with scheduled tests
-  %(prog)s --once           # Run single test and exit (for systemd timer)
-  %(prog)s --interval 900   # Run every 15 minutes (daemon mode)
+  %(prog)s                         # Run as daemon with interval-based scheduling
+  %(prog)s --once                  # Run single test and exit (for systemd timer)
+  %(prog)s --interval 900          # Run every 15 minutes (daemon mode)
+  %(prog)s --cron "0 3,9,15,21 * * *"  # Run at 03:00, 09:00, 15:00, 21:00 daily
         """
     )
     parser.add_argument(
@@ -592,9 +639,18 @@ Examples:
         default=None,
         help=f"Override test interval in seconds (default: SPEEDTEST_INTERVAL or {DEFAULT_SPEEDTEST_INTERVAL})"
     )
+    parser.add_argument(
+        "--cron",
+        type=str,
+        default=None,
+        help="Cron expression for scheduling (overrides --interval). "
+             "Example: '0 3,9,15,21 * * *' runs at 03:00, 09:00, 15:00, 21:00"
+    )
     args = parser.parse_args(argv)
-    
-    # A single run never schedules anything, so it does not need the interval.
+
+    # CLI args override env vars. A single run never schedules anything, so it
+    # does not need the interval.
+    cron_expr = args.cron or SPEEDTEST_CRON
     interval = None
     if not args.once:
         try:
@@ -602,15 +658,18 @@ Examples:
         except ConfigError as e:
             print(f"Configuration error: {e}", file=sys.stderr)
             sys.exit(2)
-    
+
     print("="*60)
     print("NetPulse - Network Speed & ISP Monitor")
     print("="*60)
     print(f"InfluxDB URL: {INFLUXDB_URL}")
     print(f"InfluxDB Org: {INFLUXDB_ORG}")
     print(f"InfluxDB Bucket: {INFLUXDB_BUCKET}")
+    print(f"IP Privacy Mode: {'enabled (IP hidden)' if HIDE_EXTERNAL_IP else 'disabled'}")
     if args.once:
         print("Mode: Single run (--once)")
+    elif cron_expr:
+        print(f"Mode: Cron schedule ({cron_expr})")
     else:
         print(f"Test Interval: {interval} seconds ({interval/60:.1f} minutes)")
     print("="*60)
@@ -621,8 +680,10 @@ Examples:
         sys.exit(1)
     
     # Create runner
-    runner = SpeedtestRunner(interval=interval)
-    
+    # A cron schedule prints its own next-run line, so the runner gets no interval
+    sched_type, sched_value = get_scheduler(interval, cron_expr)
+    runner = SpeedtestRunner(interval=None if sched_type == "cron" else interval)
+
     # Run initial test
     runner.run_test_cycle()
     
@@ -631,13 +692,14 @@ Examples:
         print("Single run completed. Exiting.")
         return
     
-    # Schedule periodic tests (daemon mode)
-    schedule.every(interval).seconds.do(runner.run_test_cycle)
-    
-    # Run scheduler
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    # Schedule periodic tests
+    if sched_type == "cron":
+        run_cron_scheduler(runner, sched_value)
+    else:
+        schedule.every(sched_value).seconds.do(runner.run_test_cycle)
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
 
 
 if __name__ == "__main__":
