@@ -67,7 +67,8 @@ class ISPTracker:
         self.last_isp: str | None = None
         self.last_asn: str | None = None
         self.last_connection_type: str | None = None
-        
+        self._asn_gap_logged = False  # the missing-ASN notice prints once per process
+
         # Load persisted state from file
         self._load_state()
     
@@ -135,25 +136,11 @@ class ISPTracker:
                     ip_info["isp"] = parts[1] if len(parts) > 1 else org
                 else:
                     ip_info["isp"] = org
-        except Exception as e:  # noqa: BLE001  # keep the daemon alive and fall through to ip-api; error is logged
-            print(f"Error fetching from ipinfo.io: {e}")
-        
-        # Fallback to ip-api.com if ipinfo.io failed
-        if not ip_info["ip"]:
-            try:
-                response = requests.get("http://ip-api.com/json", timeout=10)  # nosemgrep: python.lang.security.audit.insecure-transport.requests.request-with-http.request-with-http  # ip-api.com free tier is http-only (https returns 403), public geo lookup, no credentials sent
-                if response.status_code == 200:
-                    data = response.json()
-                    ip_info["ip"] = data.get("query")
-                    ip_info["isp"] = data.get("isp")
-                    ip_info["asn"] = data["as"].split(" ")[0] if data.get("as") else None
-                    ip_info["org"] = data.get("org")
-                    ip_info["city"] = data.get("city")
-                    ip_info["region"] = data.get("regionName")
-                    ip_info["country"] = data.get("countryCode")
-            except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged
-                print(f"Error fetching from ip-api.com: {e}")
-        
+            else:
+                print(f"ipinfo.io returned HTTP {response.status_code}; no IP reported this cycle")
+        except Exception as e:  # noqa: BLE001  # keep the daemon alive; error is logged, cycle continues with no IP
+            print(f"Error fetching from ipinfo.io: {e}; no IP reported this cycle")
+
         # Infer connection type based on ISP name keywords
         if ip_info["isp"]:
             isp_lower = ip_info["isp"].lower()
@@ -198,24 +185,28 @@ class ISPTracker:
             print("IP lookup failed; keeping the previous ISP state")
             return change_info
 
-        # Check for changes (only if we have previous values)
+        # Check for changes (only if we have previous values). An ISP change is
+        # keyed on the ASN number. A new IP alone (DHCP) or a renamed org under
+        # the same ASN is recorded but is not an ISP change. Without an ASN on
+        # either side, names alone never raise an event.
         if self.last_ip is not None:
-            if current_ip != self.last_ip:
-                change_info["ip_changed"] = True
-                change_info["changed"] = True
-            
-            if current_isp != self.last_isp:
-                change_info["isp_changed"] = True
-                change_info["changed"] = True
-            
-            if current_asn != self.last_asn:
-                change_info["asn_changed"] = True
-                change_info["changed"] = True
-        
-        # Update last known values
+            change_info["ip_changed"] = current_ip != self.last_ip
+            if current_asn is None or self.last_asn is None:
+                if not self._asn_gap_logged:
+                    print("No ASN on one side of the comparison; ISP change detection is paused until an ASN is seen on both")
+                    self._asn_gap_logged = True
+            else:
+                if current_asn != self.last_asn:
+                    change_info["asn_changed"] = True
+                    change_info["changed"] = True
+                change_info["isp_changed"] = current_isp != self.last_isp
+
+        # Update last known values. A cycle without an ASN keeps the saved ASN,
+        # so the next run with an ASN is compared against the real baseline.
         self.last_ip = current_ip
         self.last_isp = current_isp
-        self.last_asn = current_asn
+        if current_asn is not None:
+            self.last_asn = current_asn
         self.last_connection_type = current_connection_type
         
         # Persist state to file for next run (important for --once mode)
