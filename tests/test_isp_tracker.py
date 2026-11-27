@@ -40,20 +40,20 @@ def test_ipinfo_null_org_does_not_crash(tracker, fake_http):
     assert info["connection_type"] is None
 
 
-def test_ipinfo_failure_falls_back_to_ipapi(tracker, fake_http):
+def test_ipinfo_failure_makes_no_plain_http_fallback(tracker, fake_http):
     fake_http.routes["ipinfo.io"] = requests.ConnectionError("down")
     fake_http.routes["ip-api.com"] = FakeResponse(200, load_fixture("ipapi.json"))
     info = tracker.get_ip_info()
-    assert info["ip"] == "198.51.100.9"
-    assert info["asn"] == "AS64501"
-    assert info["isp"] == "Example Fiber LLC"
-    assert info["connection_type"] == "fiber"
+    assert info["ip"] is None
+    assert fake_http.calls == ["https://ipinfo.io/json"]
 
 
-def test_ipinfo_bad_status_falls_back(tracker, fake_http):
+def test_ipinfo_bad_status_makes_no_plain_http_fallback(tracker, fake_http, capsys):
     fake_http.routes["ipinfo.io"] = FakeResponse(429, {})
     fake_http.routes["ip-api.com"] = FakeResponse(200, load_fixture("ipapi.json"))
-    assert tracker.get_ip_info()["ip"] == "198.51.100.9"
+    assert tracker.get_ip_info()["ip"] is None
+    assert fake_http.calls == ["https://ipinfo.io/json"]
+    assert "ipinfo.io returned HTTP 429" in capsys.readouterr().out
 
 
 def test_both_lookups_fail(tracker, fake_http):
