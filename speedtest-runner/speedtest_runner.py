@@ -185,12 +185,14 @@ class ISPTracker:
             print("IP lookup failed; keeping the previous ISP state")
             return change_info
 
-        # Check for changes (only if we have previous values). An ISP change is
-        # keyed on the ASN number. A new IP alone (DHCP) or a renamed org under
-        # the same ASN is recorded but is not an ISP change. Without an ASN on
-        # either side, names alone never raise an event.
+        # Check for changes (only if we have previous values). An IP change
+        # raises the event as before. An ISP change is keyed on the ASN number:
+        # a renamed org under the same ASN is recorded but is not a change.
+        # Without an ASN on either side, names alone never raise an event.
         if self.last_ip is not None:
-            change_info["ip_changed"] = current_ip != self.last_ip
+            if current_ip != self.last_ip:
+                change_info["ip_changed"] = True
+                change_info["changed"] = True
             if current_asn is None or self.last_asn is None:
                 if not self._asn_gap_logged:
                     print("No ASN on one side of the comparison; ISP change detection is paused until an ASN is seen on both")

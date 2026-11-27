@@ -95,3 +95,25 @@ def test_missing_asn_keeps_asn_baseline(tracker):
     change = tracker.check_for_change({**GOOD, "asn": "AS64999"})
     assert change["changed"] is True
     assert change["previous_asn"] == "AS64500"
+
+
+def test_same_asn_different_ip_raises_ip_change_as_on_main(tracker):
+    """Matches main: an IP change raises the event, even when the ASN is the same."""
+    tracker.check_for_change(dict(GOOD))
+    change = tracker.check_for_change({**GOOD, "ip": "198.51.100.44"})
+    assert change["changed"] is True
+    assert change["ip_changed"] is True
+    assert change["asn_changed"] is False
+    assert change["previous_ip"] == "203.0.113.7"
+
+
+def test_failed_lookup_keeps_baseline_in_both_runners(tracker, capsys):
+    tracker.check_for_change(dict(GOOD))
+    change = tracker.check_for_change({"ip": None, "isp": None, "asn": None, "connection_type": None})
+    assert change["changed"] is False
+    assert tracker.last_ip == "203.0.113.7"
+    assert tracker.last_isp == "Example Cable Co"
+    assert tracker.last_asn == "AS64500"
+    assert "IP lookup failed" in capsys.readouterr().out
+    # The next good lookup is compared with the real baseline: no false event.
+    assert tracker.check_for_change(dict(GOOD))["changed"] is False
